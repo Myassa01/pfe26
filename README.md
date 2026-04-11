@@ -1,7 +1,6 @@
 # RAG Local
 
 Système de Retrieval-Augmented Generation 100% local — aucune clé API, aucune donnée envoyée à l'extérieur.
-
 ---
 
 ## Prérequis
