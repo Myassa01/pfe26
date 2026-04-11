@@ -22,6 +22,8 @@ import sys
 import os
 import shutil
 import json
+from pyngrok import ngrok
+
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -303,5 +305,16 @@ async def reset_index():
     return {"message": "Index réinitialisé"}
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8001, reload=False)
+    import subprocess
+
+    # Lancer Uvicorn en arrière-plan
+    subprocess.Popen([
+        "uvicorn", "api:app",
+        "--host", "0.0.0.0",
+        "--port", "8001"
+    ])
+
+    # Créer un tunnel public avec localtunnel
+    import os
+    os.system("npx localtunnel --port 8001 --subdomain myassa")
+
