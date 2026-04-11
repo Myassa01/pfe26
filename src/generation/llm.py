@@ -10,23 +10,64 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class OllamaClient:
+"""Client Hugging Face pour l'inférence LLM locale ou via hub."""
+import logging
+from typing import Optional
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+
+# Configuration du logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class HFClient:
     def __init__(
-        self, 
-        base_url: str = "http://localhost:11434", 
-        model: str = "llama3.2:3b",  # Changé par défaut
-        temperature: float = 0.1,
-        max_tokens: int = 1500,  # Réduit de 2048 à 200
-        timeout: int = 60  # Timeout plus raisonnable
+        self,
+        model: str = "Qwen/Qwen2-7B-Instruct",  # modèle Hugging Face
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        temperature: float = 0.7,
+        max_tokens: int = 512,
     ):
-        self.base_url = base_url.rstrip("/")
-        self.model = model
+        self.model_name = model
+        self.device = device
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.timeout = timeout
-        self._check_connection()
-        self._warm_up()  # Préchauffe le modèle
 
+        logger.info(f"Chargement du modèle {self.model_name} sur {self.device}...")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            device_map="auto" if self.device == "cuda" else None,
+        )
+        logger.info("✓ Modèle chargé et prêt.")
+
+    def generate(
+        self,
+        prompt: str,
+        system: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Génère une réponse avec Hugging Face."""
+        temp = temperature if temperature is not None else self.temperature
+        tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        if system:
+            prompt = f"[System]: {system}\n[User]: {prompt}"
+
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=tokens,
+            temperature=temp,
+            do_sample=True,
+            top_k=40,
+            top_p=0.9,
+        )
+        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return response
+        
     def _check_connection(self) -> None:
         """Vérifie la connexion à Ollama et la disponibilité du modèle."""
         try:

@@ -5,7 +5,8 @@ from dataclasses import dataclass
 class Config:
     # ── LLM via Ollama ──────────────────────────────────────────────
     ollama_base_url: str = "http://localhost:11434"
-    llm_model: str = "llama3.2:3b"
+    llm_model: str = "Qwen/Qwen2-7B-Instruct"
+
     llm_temperature: float = 0.0   # 0 = réponses plus déterministes/factuelles
     llm_max_tokens: int = 512      # Petit modèle → réponses courtes et précises
  

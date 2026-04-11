@@ -1,7 +1,7 @@
 """Transformation de requêtes: réécriture et expansion multi-query."""
 import re
 from typing import List
-from .llm import OllamaClient
+from .llm import HFClient
 
 _REWRITE_PROMPT = """Reformule cette question de recherche en français, de façon claire et précise.
 Réponds avec UNIQUEMENT la question reformulée, rien d'autre.
@@ -17,7 +17,7 @@ Reformulations:"""
 
 
 class QueryTransformer:
-    def __init__(self, llm: OllamaClient):
+    def __init__(self, llm: HFClient):
         self.llm = llm
 
     def rewrite(self, query: str) -> str:

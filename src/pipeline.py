@@ -10,7 +10,7 @@ from .retrieval.vector_store import VectorStore
 from .retrieval.bm25_search import BM25Search, BM25Document
 from .retrieval.hybrid_search import reciprocal_rank_fusion
 from .reranking.reranker import CrossEncoderReranker
-from .generation.llm import OllamaClient
+from .generation.llm import HFClient
 from .generation.query_transform import QueryTransformer
 
 # ── Prompts optimisés pour petit modèle (qwen2.5:0.5b) ──────────────────────
@@ -50,8 +50,7 @@ class RAGPipeline:
 
         self.reranker = CrossEncoderReranker(model_name=config.reranker_model)
 
-        self.llm = OllamaClient(
-            base_url=config.ollama_base_url,
+        self.llm = HFClient(
             model=config.llm_model,
         )
 
