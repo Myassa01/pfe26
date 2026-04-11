@@ -305,16 +305,39 @@ async def reset_index():
     return {"message": "Index réinitialisé"}
 
 if __name__ == "__main__":
-    import subprocess
+    import threading
+    import time
+    import requests
+    import uvicorn
+    from pyngrok import ngrok
 
-    # Lancer Uvicorn en arrière-plan
-    subprocess.Popen([
-        "uvicorn", "api:app",
-        "--host", "0.0.0.0",
-        "--port", "8001"
-    ])
+    # 1. Lancer FastAPI en thread (background)
+    def run():
+        uvicorn.run(app, host="0.0.0.0", port=8001)
 
-    # Créer un tunnel public avec localtunnel
-    import os
-    os.system("npx localtunnel --port 8001 --subdomain myassa")
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
 
+    # 2. Attendre que le serveur soit prêt
+    url = "http://localhost:8001/health"
+
+    for _ in range(200):
+        try:
+            r = requests.get(url)
+            if r.status_code == 200:
+                print("✅ FastAPI ready!")
+                break
+        except:
+            pass
+        time.sleep(1)
+    else:
+        raise RuntimeError("❌ Server failed to start")
+
+    # 3. Lancer ngrok
+    public_url = ngrok.connect(8001)
+    print("🌍 Public URL:", public_url)
+
+    print("🚀 API + Tunnel OK")
+
+    while True:
+      time.sleep(60)

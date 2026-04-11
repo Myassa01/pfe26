@@ -27,6 +27,7 @@ class HFClient:
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         temperature: float = 0.7,
         max_tokens: int = 512,
+        base_url: str,
     ):
         self.model_name = model
         self.device = device
