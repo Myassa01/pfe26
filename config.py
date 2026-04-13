@@ -1,47 +1,49 @@
 from dataclasses import dataclass
- 
- 
+import torch
+
+
 @dataclass
 class Config:
-    # ── LLM via Ollama ──────────────────────────────────────────────
-    ollama_base_url: str = "http://localhost:11434"
-    llm_model: str = "Qwen/Qwen2-7B-Instruct"
+    # ── LLM HuggingFace ─────────────────────────────────────────────────────
+    # Colab gratuit (T4 15GB) → Qwen/Qwen2.5-1.5B-Instruct  (~3GB)
+    # Colab Pro    (A100)     → Qwen/Qwen2.5-7B-Instruct    (~14GB)
+    llm_model: str = "Qwen/Qwen2.5-1.5B-Instruct"
 
-    llm_temperature: float = 0.0   # 0 = réponses plus déterministes/factuelles
-    llm_max_tokens: int = 512      # Petit modèle → réponses courtes et précises
- 
-    # ── Embeddings multilingues (français supporté) ─────────────────
-    # paraphrase-multilingual-MiniLM-L12-v2 : 118MB, supporte 50+ langues dont FR
+    llm_temperature: float = 0.0
+    llm_max_tokens: int = 512
+
+    # ── Embeddings multilingues ──────────────────────────────────────────────
     embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
-    embedding_device: str = "cpu"
+    embedding_device: str = "cuda" if torch.cuda.is_available() else "cpu"
     embedding_batch_size: int = 32
- 
-    # ── Reranker multilingue ────────────────────────────────────────
-    # ms-marco-MiniLM-L-6-v2 reste correct même en FR pour le reranking
-    # car il score la pertinence sémantique générale
+
+    # ── Reranker ────────────────────────────────────────────────────────────
     reranker_model: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
- 
-    # ── ChromaDB ────────────────────────────────────────────────────
+
+    # ── ChromaDB ────────────────────────────────────────────────────────────
     chroma_persist_dir: str = "./data/chroma_db"
     collection_name: str = "rag_documents"
- 
-    # ── BM25 ────────────────────────────────────────────────────────
+
+    # ── BM25 ────────────────────────────────────────────────────────────────
     bm25_index_path: str = "./data/bm25_index.pkl"
- 
-    # ── Chunking ────────────────────────────────────────────────────
-    # Chunks plus petits = contexte plus précis = meilleure réponse
-    chunk_size: int = 500
+
+    # ── Chunking ─────────────────────────────────────────────────────────────
+    # ↑ chunk_size augmenté : les fiches individuelles font ~300 chars
+    # → un chunk = une fiche complète = meilleur contexte
+    chunk_size: int = 600
     chunk_overlap: int = 50
- 
-    # ── Retrieval ───────────────────────────────────────────────────
-    top_k_dense: int = 15
-    top_k_sparse: int = 15
-    top_k_after_rerank: int = 5   # 5 chunks max pour petit modèle (contexte limité)
+
+    # ── Retrieval ────────────────────────────────────────────────────────────
+    top_k_dense: int = 20   # ↑ augmenté pour ne pas rater des résultats
+    top_k_sparse: int = 20  # ↑ augmenté (BM25 fort sur les noms propres)
+    top_k_after_rerank: int = 5
     rrf_k: int = 60
- 
-    # ── Chemins ─────────────────────────────────────────────────────
+
+    # ── Chemins ─────────────────────────────────────────────────────────────
     docs_dir: str = "./documents"
     data_dir: str = "./data"
- 
- 
+
+    ollama_base_url: str = "http://localhost:11434"
+
+
 config = Config()
