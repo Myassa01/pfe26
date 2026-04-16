@@ -45,7 +45,7 @@ class Config:
     # difficiles à calibrer avec un seuil fixe.
     max_chunks_exhaustive: int = 30
     # max_tokens élevé pour les réponses longues (listes, tableaux)
-    llm_max_tokens_long: int = 2048
+    llm_max_tokens_long: int = 1024
 
     # ── Chemins ─────────────────────────────────────────────────────────────
     docs_dir: str = "./documents"

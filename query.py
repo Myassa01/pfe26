@@ -30,7 +30,7 @@ def main():
     parser = argparse.ArgumentParser(description="Interroger le RAG local")
     parser.add_argument("-q", "--question", help="Question directe (non interactif)")
     parser.add_argument("--model", default=config.llm_model, help="Modèle HuggingFace (ex: Qwen/Qwen2.5-1.5B-Instruct)")
-    parser.add_argument("--no-transform", action="store_true", help="Désactive la réécriture de requête")
+    parser.add_argument("--transform", action="store_true", help="Active la réécriture de requête (désactivé par défaut)")
     parser.add_argument("--no-stream", action="store_true", help="Désactive le streaming de la réponse")
     args = parser.parse_args()
 
@@ -48,7 +48,7 @@ def main():
     print(f"LLM            : {config.llm_model}")
     print(f"Embedding      : {config.embedding_model}")
 
-    use_transform = not args.no_transform
+    use_transform = args.transform
     use_stream = not args.no_stream
 
     def ask(question: str) -> None:

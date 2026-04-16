@@ -112,7 +112,7 @@ class HFClient:
                     do_sample=do_sample,
                     top_k=40              if do_sample else None,
                     top_p=0.9             if do_sample else None,
-                    repetition_penalty=1.1,
+                    repetition_penalty=1.3,
                     pad_token_id=self.tokenizer.eos_token_id,
                 )
 
@@ -156,17 +156,32 @@ class HFClient:
             do_sample=do_sample,
             top_k=40          if do_sample else None,
             top_p=0.9         if do_sample else None,
-            repetition_penalty=1.1,
+            repetition_penalty=1.3,
             pad_token_id=self.tokenizer.eos_token_id,
             streamer=streamer,
         )
         start, token_count = time.time(), 0
         thread = Thread(target=self.model.generate, kwargs=gen_kwargs)
         thread.start()
+        # Détection de boucle de répétition : si la même ligne apparaît 3+ fois, on arrête
+        recent_lines = []
+        buffer = ""
         for token in streamer:
             if token:
                 token_count += 1
+                buffer += token
                 yield token
+                # Vérifier les lignes complètes
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line_stripped = line.strip()
+                    if line_stripped:
+                        recent_lines.append(line_stripped)
+                        # Si les 3 dernières lignes sont identiques → boucle détectée
+                        if len(recent_lines) >= 3 and len(set(recent_lines[-3:])) == 1:
+                            logger.warning("⚠ Boucle de répétition détectée, arrêt de la génération")
+                            thread.join()
+                            return
         thread.join()
         elapsed = time.time() - start
         logger.info(f"✓ Streaming: {token_count} tokens en {elapsed:.2f}s ({token_count/max(elapsed,0.1):.1f} tok/s)")

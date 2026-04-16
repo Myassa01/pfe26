@@ -109,6 +109,13 @@ class RAGPipeline:
         "DEPARTEMENT": ["departement", "departements", "département", "départements", "chef de departement", "chefs de departement"],
         "SERVICE": ["service", "services", "chef de service", "chefs de service"],
     }
+    # Mots-clés qui excluent POSTE.xlsx (données organisationnelles vs fiches de poste)
+    # "chantier" est une colonne dans DIRECTION/DEPARTEMENT/SERVICE, pas dans POSTE
+    _EXCLUDE_POSTE_KEYWORDS = [
+        "chantier", "chantiers", "affectation", "affectations",
+        "matricule", "matricules", "nom", "prenom", "prénom",
+        "observation", "fonction",
+    ]
 
     @staticmethod
     def _detect_relevant_sources(question: str) -> set:
@@ -121,16 +128,35 @@ class RAGPipeline:
         return relevant
 
     @staticmethod
-    def _filter_by_source(chunks: list, relevant_sources: set) -> list:
+    def _should_exclude_poste(question: str) -> bool:
+        """Détecte si la question porte sur des données organisationnelles
+        (colonnes de DIRECTION/DEPARTEMENT/SERVICE) qui n'existent pas dans POSTE."""
+        q = question.lower()
+        return any(kw in q for kw in RAGPipeline._EXCLUDE_POSTE_KEYWORDS)
+
+    @staticmethod
+    def _filter_by_source(chunks: list, relevant_sources: set, exclude_poste: bool = False) -> list:
         """Filtre les chunks pour privilégier les sources pertinentes.
         Si des sources pertinentes sont détectées, garde uniquement les chunks
         provenant de ces sources + un petit nombre de chunks d'autres sources."""
+
+        filtered = chunks
+
+        # Exclure POSTE.xlsx si la question porte sur des données organisationnelles
+        if exclude_poste and not relevant_sources:
+            filtered = [c for c in filtered
+                        if c["metadata"].get("filename", "").upper().rsplit(".", 1)[0] != "POSTE"]
+            if filtered:
+                logger.info("  → Exclusion POSTE: %d/%d chunks retenus", len(filtered), len(chunks))
+                return filtered
+            return chunks  # Fallback si tout filtré
+
         if not relevant_sources:
             return chunks  # Pas de filtre si aucune source détectée
 
         from_relevant = []
         from_other = []
-        for chunk in chunks:
+        for chunk in filtered:
             fname = chunk["metadata"].get("filename", "").upper()
             source_stem = fname.rsplit(".", 1)[0] if "." in fname else fname
             if source_stem in relevant_sources:
@@ -349,8 +375,9 @@ class RAGPipeline:
 
         # Étape 3.5 : Filtre par source pertinente (évite la pollution POSTE.xlsx)
         relevant_sources = self._detect_relevant_sources(question)
-        if relevant_sources:
-            reranked = self._filter_by_source(reranked, relevant_sources)
+        exclude_poste = self._should_exclude_poste(question)
+        if relevant_sources or exclude_poste:
+            reranked = self._filter_by_source(reranked, relevant_sources, exclude_poste)
 
         # Étape 4 : Génération
         logger.info("  [4/4] Génération LLM...")
