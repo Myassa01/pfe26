@@ -173,6 +173,72 @@ class RAGPipeline:
                      len(result), len(chunks), ", ".join(relevant_sources))
         return result
 
+    # ── EXTRACTION DIRECTE (bypass retrieval pour listes exhaustives) ──────
+    # Patterns question → colonne à extraire
+    _DIRECT_EXTRACT_PATTERNS = [
+        # (mots-clés question, colonne à extraire, sources à scanner)
+        # colonne=None → retourner toute la ligne
+        # colonne="XXX" → extraire les valeurs uniques de cette colonne
+        # ⚠ Ordre important : patterns spécifiques AVANT les génériques
+        (["chef de departement", "chefs de departement", "chef de département", "chefs de département"], None, ["DEPARTEMENT"]),
+        (["chef de service", "chefs de service"], None, ["SERVICE"]),
+        (["directeur", "directeurs", "directrice"], None, ["DIRECTION"]),
+        (["chantier", "chantiers"], "CHANTIER", ["DIRECTION", "DEPARTEMENT", "SERVICE"]),
+        # La colonne CHANTIER contient le nom lisible (ex: "SERVICE HELP DESK.")
+        # AFFECTATION est un code numérique → on extrait CHANTIER
+        (["service"], "CHANTIER", ["SERVICE"]),
+        (["departement", "département"], "CHANTIER", ["DEPARTEMENT"]),
+        (["direction"], "CHANTIER", ["DIRECTION"]),
+    ]
+
+    def _try_direct_extract(self, question: str) -> Optional[List[Dict]]:
+        """Pour les questions de type liste, tente d'extraire directement
+        depuis les documents BM25 en mémoire, sans passer par le retriever.
+        Retourne None si aucune extraction directe n'est possible."""
+        q = question.lower()
+
+        for keywords, column, sources in self._DIRECT_EXTRACT_PATTERNS:
+            if not any(kw in q for kw in keywords):
+                continue
+
+            # Scanner les documents BM25 en mémoire
+            results = []
+            seen_values = set()
+            for doc in self.bm25.documents:
+                fname = doc.metadata.get("filename", "").upper()
+                source_stem = fname.rsplit(".", 1)[0] if "." in fname else fname
+                if source_stem not in sources:
+                    continue
+
+                if column:
+                    # Extraire la valeur d'une colonne spécifique
+                    # Format: [SOURCE] COL1: val1 | COL2: val2 | CHANTIER: Arzew | ...
+                    for part in doc.content.split("|"):
+                        part = part.strip()
+                        if ":" in part:
+                            key, val = part.split(":", 1)
+                            key = key.strip().lstrip("[").rstrip("]").strip()
+                            val = val.strip()
+                            if key.upper() == column and val and val.lower() not in seen_values:
+                                seen_values.add(val.lower())
+                                results.append({
+                                    "content": val,
+                                    "metadata": doc.metadata,
+                                })
+                else:
+                    # Retourner toute la ligne (pour directeurs, chefs, etc.)
+                    results.append({
+                        "content": doc.content,
+                        "metadata": doc.metadata,
+                    })
+
+            if results:
+                logger.info("  ⟹ Extraction directe: %d résultats (colonne=%s, sources=%s)",
+                            len(results), column or "ALL", ",".join(sources))
+                return results
+
+        return None
+
     # ── DÉDUPLICATION ────────────────────────────────────────────────────────
 
     @staticmethod
@@ -316,6 +382,43 @@ class RAGPipeline:
         exhaustive = self._is_list_question(question)
         if exhaustive:
             logger.info("  ⟹ Mode exhaustif détecté (question de type liste)")
+
+        # ── Extraction directe (bypass retrieval pour les listes) ───────
+        if exhaustive:
+            direct = self._try_direct_extract(question)
+            if direct:
+                # Construire le contexte directement sans passer par le retriever
+                context = self._format_context(direct)
+                history_text = self._format_history(history) if history else ""
+                template = _GENERATION_PROMPT_LIST
+                prompt = template.format(
+                    context=context, question=question, history=history_text,
+                )
+                max_tokens = self.config.llm_max_tokens_long
+                logger.info("  [4/4] Génération LLM (extraction directe, %d éléments)...", len(direct))
+                if stream:
+                    answer_parts = []
+                    for token in self.llm.generate_stream(
+                        prompt=prompt, system=_SYSTEM_PROMPT, max_tokens=max_tokens,
+                    ):
+                        print(token, end="", flush=True)
+                        answer_parts.append(token)
+                    print()
+                    answer = "".join(answer_parts)
+                else:
+                    answer = self.llm.generate(
+                        prompt=prompt, system=_SYSTEM_PROMPT,
+                        temperature=self.config.llm_temperature, max_tokens=max_tokens,
+                    )
+                elapsed = round(time.time() - start, 2)
+                return {
+                    "question": question,
+                    "search_query": question,
+                    "answer": answer,
+                    "sources": self._extract_sources(direct),
+                    "chunks_used": len(direct),
+                    "elapsed_seconds": elapsed,
+                }
 
         # Étape 1 : Transformation de la requête (optionnelle)
         if use_query_transform:

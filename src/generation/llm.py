@@ -112,7 +112,7 @@ class HFClient:
                     do_sample=do_sample,
                     top_k=40              if do_sample else None,
                     top_p=0.9             if do_sample else None,
-                    repetition_penalty=1.3,
+                    repetition_penalty=1.2,
                     pad_token_id=self.tokenizer.eos_token_id,
                 )
 

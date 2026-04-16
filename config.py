@@ -7,7 +7,7 @@ class Config:
     # ── LLM HuggingFace ─────────────────────────────────────────────────────
     # Colab gratuit (T4 15GB) → Qwen/Qwen2.5-1.5B-Instruct  (~3GB)
     # Colab Pro    (A100)     → Qwen/Qwen2.5-7B-Instruct    (~14GB)
-    llm_model: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    llm_model: str = "Qwen/Qwen2.5-3B-Instruct"
 
     llm_temperature: float = 0.0
     llm_max_tokens: int = 512
