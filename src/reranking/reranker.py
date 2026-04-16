@@ -1,11 +1,14 @@
 """Reranker local via Cross-Encoder (sentence-transformers)."""
+import logging
 from typing import List, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 class CrossEncoderReranker:
     def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
         from sentence_transformers import CrossEncoder
-        print(f"Chargement du reranker: {model_name}...")
+        logger.info("Chargement du reranker: %s...", model_name)
         self.model = CrossEncoder(model_name, max_length=512)
         self.model_name = model_name
 

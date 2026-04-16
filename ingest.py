@@ -6,12 +6,19 @@ Usage:
     python ingest.py
     python ingest.py --docs-dir ./mes_docs
     python ingest.py --reset          # Réindexe depuis zéro
-    python ingest.py --model mistral  # Modèle Ollama différent
+    python ingest.py --model Qwen/Qwen2.5-7B-Instruct  # Modèle HuggingFace différent
 """
+import logging
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 from config import config
 from src.pipeline import RAGPipeline
@@ -22,7 +29,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Ingestion de documents dans le RAG local")
     parser.add_argument("--docs-dir", default=config.docs_dir, help="Dossier des documents à indexer")
-    parser.add_argument("--model", default=config.llm_model, help="Modèle Ollama (ex: llama3.2, mistral)")
+    parser.add_argument("--model", default=config.llm_model, help="Modèle HuggingFace (ex: Qwen/Qwen2.5-1.5B-Instruct)")
     parser.add_argument("--reset", action="store_true", help="Réinitialise l'index avant d'ingérer")
     parser.add_argument(
         "--embedding-model",

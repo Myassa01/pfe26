@@ -1,7 +1,11 @@
 """Pipeline RAG principal — orchestration de toutes les couches."""
+import hashlib
+import logging
 import os
 import time
 from typing import List, Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from .ingestion.loader import load_directory, Document
 from .ingestion.chunker import chunk_documents
@@ -32,8 +36,8 @@ class RAGPipeline:
     def __init__(self, config):
         self.config = config
 
-        print("\nInitialisation du pipeline RAG local...")
-        print("=" * 50)
+        logger.info("Initialisation du pipeline RAG local...")
+        logger.info("=" * 50)
 
         self.embedder = Embedder(
             model_name=config.embedding_model,
@@ -55,8 +59,30 @@ class RAGPipeline:
         )
 
         self.query_transformer = QueryTransformer(llm=self.llm)
-        print("=" * 50)
-        print("Pipeline prêt.\n")
+
+        # Cache LRU pour les résultats de retrieval (évite de refaire embedding+search+rerank)
+        self._retrieval_cache: Dict[str, List[Dict]] = {}
+        self._cache_max_size: int = 128
+
+        logger.info("=" * 50)
+        logger.info("Pipeline prêt.")
+
+    # ── DÉDUPLICATION ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _deduplicate_chunks(chunks: list) -> list:
+        """Supprime les chunks avec un contenu identique (hash SHA256)."""
+        seen = set()
+        unique = []
+        for chunk in chunks:
+            h = hashlib.sha256(chunk.content.encode("utf-8")).hexdigest()
+            if h not in seen:
+                seen.add(h)
+                unique.append(chunk)
+        removed = len(chunks) - len(unique)
+        if removed > 0:
+            logger.info("  → %d chunk(s) dupliqué(s) supprimé(s)", removed)
+        return unique
 
     # ── INGESTION ────────────────────────────────────────────────────────────
 
@@ -64,44 +90,46 @@ class RAGPipeline:
         """Ingère les documents du dossier dans le RAG."""
         docs_dir = docs_dir or self.config.docs_dir
 
-        print(f"\n{'='*50}")
-        print("INGESTION PIPELINE")
-        print(f"{'='*50}")
+        logger.info("=" * 50)
+        logger.info("INGESTION PIPELINE")
+        logger.info("=" * 50)
 
         if reset:
-            print("\nRéinitialisation du vector store...")
+            logger.info("Réinitialisation du vector store...")
             self.vector_store.reset()
             if os.path.exists(self.config.bm25_index_path):
                 os.remove(self.config.bm25_index_path)
 
         # 1. Chargement
-        print(f"\n[1/4] Chargement des documents depuis '{docs_dir}'...")
+        logger.info("[1/4] Chargement des documents depuis '%s'...", docs_dir)
         documents = load_directory(docs_dir)
         if not documents:
             raise ValueError(f"Aucun document trouvé dans: {docs_dir}")
-        print(f"  → {len(documents)} documents chargés")
+        logger.info("  → %d documents chargés", len(documents))
 
         # 2. Chunking
-        print(f"\n[2/4] Découpage (chunk_size={self.config.chunk_size}, overlap={self.config.chunk_overlap})...")
+        logger.info("[2/4] Découpage (chunk_size=%d tokens, overlap=%d)...", self.config.chunk_size, self.config.chunk_overlap)
         chunks = chunk_documents(
             documents,
             chunk_size=self.config.chunk_size,
             overlap=self.config.chunk_overlap,
+            embedding_model=self.config.embedding_model,
         )
-        print(f"  → {len(chunks)} chunks créés")
+        logger.info("  → %d chunks créés", len(chunks))
+        chunks = self._deduplicate_chunks(chunks)
 
         # 3. Embeddings
-        print(f"\n[3/4] Génération des embeddings ({self.config.embedding_model})...")
+        logger.info("[3/4] Génération des embeddings (%s)...", self.config.embedding_model)
         texts = [c.content for c in chunks]
         embeddings = self.embedder.embed(
             texts,
             batch_size=self.config.embedding_batch_size,
             show_progress=True,
         )
-        print(f"  → Shape: {embeddings.shape}")
+        logger.info("  → Shape: %s", embeddings.shape)
 
         # 4. Indexation
-        print("\n[4/4] Indexation (ChromaDB + BM25)...")
+        logger.info("[4/4] Indexation (ChromaDB + BM25)...")
         self.vector_store.add(
             ids=[c.id for c in chunks],
             embeddings=list(embeddings),
@@ -116,9 +144,11 @@ class RAGPipeline:
         self.bm25.add_documents(bm25_docs)
         self.bm25.save(self.config.bm25_index_path)
 
-        print(f"\n{'='*50}")
-        print(f"Ingestion terminée: {len(chunks)} chunks indexés")
-        print(f"{'='*50}\n")
+        self._retrieval_cache.clear()
+
+        logger.info("=" * 50)
+        logger.info("Ingestion terminée: %d chunks indexés", len(chunks))
+        logger.info("=" * 50)
 
         return {
             "documents": len(documents),
@@ -132,9 +162,11 @@ class RAGPipeline:
             documents,
             chunk_size=self.config.chunk_size,
             overlap=self.config.chunk_overlap,
+            embedding_model=self.config.embedding_model,
         )
         if not chunks:
             return {"documents": len(documents), "chunks": 0, "embedding_dim": 0}
+        chunks = self._deduplicate_chunks(chunks)
 
         texts = [c.content for c in chunks]
         embeddings = self.embedder.embed(
@@ -154,6 +186,7 @@ class RAGPipeline:
         ]
         self.bm25.add_documents(bm25_docs)
         self.bm25.save(self.config.bm25_index_path)
+        self._retrieval_cache.clear()
 
         return {
             "documents": len(documents),
@@ -175,32 +208,42 @@ class RAGPipeline:
 
         # Étape 1 : Transformation de la requête (optionnelle)
         if use_query_transform:
-            print("  [1/4] Transformation de la requête...")
+            logger.info("  [1/4] Transformation de la requête...")
             search_query = self.query_transformer.rewrite(question)
             if search_query != question:
-                print(f"        → {search_query}")
+                logger.info("        → %s", search_query)
         else:
             search_query = question
 
-        # Étape 2 : Recherche hybride
-        print("  [2/4] Recherche hybride...")
-        query_emb = self.embedder.embed_single(search_query)
-        dense  = self.vector_store.search(query_emb, k=self.config.top_k_dense)
-        sparse = self.bm25.search(search_query, k=self.config.top_k_sparse)
-        hybrid = reciprocal_rank_fusion(dense, sparse, k=self.config.rrf_k)
-        print(f"        Dense: {len(dense)} | Sparse: {len(sparse)} | RRF: {len(hybrid)}")
+        # Étape 2+3 : Recherche hybride + Reranking (avec cache)
+        cache_key = search_query.strip().lower()
+        if cache_key in self._retrieval_cache:
+            logger.info("  [2/4] Recherche hybride... (cache hit)")
+            logger.info("  [3/4] Reranking... (cache hit)")
+            reranked = self._retrieval_cache[cache_key]
+        else:
+            logger.info("  [2/4] Recherche hybride...")
+            query_emb = self.embedder.embed_single(search_query)
+            dense  = self.vector_store.search(query_emb, k=self.config.top_k_dense)
+            sparse = self.bm25.search(search_query, k=self.config.top_k_sparse)
+            hybrid = reciprocal_rank_fusion(dense, sparse, k=self.config.rrf_k)
+            logger.info("        Dense: %d | Sparse: %d | RRF: %d", len(dense), len(sparse), len(hybrid))
 
-        # Étape 3 : Reranking
-        print("  [3/4] Reranking...")
-        reranked = self.reranker.rerank(
-            query=search_query,
-            documents=hybrid[:20],
-            top_k=self.config.top_k_after_rerank,
-        )
-        print(f"        → {len(reranked)} chunks retenus")
+            logger.info("  [3/4] Reranking...")
+            reranked = self.reranker.rerank(
+                query=search_query,
+                documents=hybrid[:20],
+                top_k=self.config.top_k_after_rerank,
+            )
+            # Mise en cache (LRU simple)
+            if len(self._retrieval_cache) >= self._cache_max_size:
+                oldest_key = next(iter(self._retrieval_cache))
+                del self._retrieval_cache[oldest_key]
+            self._retrieval_cache[cache_key] = reranked
+        logger.info("        → %d chunks retenus", len(reranked))
 
         # Étape 4 : Génération
-        print("  [4/4] Génération LLM...")
+        logger.info("  [4/4] Génération LLM...")
         context      = self._format_context(reranked)
         history_text = self._format_history(history) if history else ""
         prompt = _GENERATION_PROMPT.format(

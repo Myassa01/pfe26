@@ -8,10 +8,17 @@ Usage:
     python query.py --no-transform           # Sans réécriture de requête
     python query.py --model mistral          # Modèle différent
 """
+import logging
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 from config import config
 from src.pipeline import RAGPipeline
@@ -22,7 +29,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Interroger le RAG local")
     parser.add_argument("-q", "--question", help="Question directe (non interactif)")
-    parser.add_argument("--model", default=config.llm_model, help="Modèle Ollama")
+    parser.add_argument("--model", default=config.llm_model, help="Modèle HuggingFace (ex: Qwen/Qwen2.5-1.5B-Instruct)")
     parser.add_argument("--no-transform", action="store_true", help="Désactive la réécriture de requête")
     parser.add_argument("--no-stream", action="store_true", help="Désactive le streaming de la réponse")
     args = parser.parse_args()

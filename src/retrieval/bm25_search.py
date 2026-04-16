@@ -1,9 +1,12 @@
 """Recherche sparse BM25 (Okapi BM25) — optimisé français."""
+import logging
 import os
 import pickle
 import re
 from typing import List, Dict, Any
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -75,17 +78,22 @@ class BM25Search:
             pickle.dump({
                 "documents":         self.documents,
                 "tokenized_corpus":  self._tokenized_corpus,
+                "bm25":              self.bm25,
             }, f)
-        print(f"Index BM25 sauvegardé: {path}")
+        logger.info("Index BM25 sauvegardé: %s", path)
 
     def load(self, path: str) -> bool:
         if not os.path.exists(path):
             return False
-        from rank_bm25 import BM25Okapi
         with open(path, "rb") as f:
             data = pickle.load(f)
         self.documents           = data["documents"]
         self._tokenized_corpus   = data["tokenized_corpus"]
-        self.bm25                = BM25Okapi(self._tokenized_corpus)
-        print(f"Index BM25 chargé: {len(self.documents)} documents")
+        # Charge l'objet BM25 directement s'il existe, sinon reconstruit (rétrocompat)
+        if "bm25" in data and data["bm25"] is not None:
+            self.bm25 = data["bm25"]
+        else:
+            from rank_bm25 import BM25Okapi
+            self.bm25 = BM25Okapi(self._tokenized_corpus)
+        logger.info("Index BM25 chargé: %d documents", len(self.documents))
         return True

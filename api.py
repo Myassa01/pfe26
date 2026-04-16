@@ -18,18 +18,27 @@ Endpoints:
     GET  /lien            → Lister les liens enregistrés
     POST /lien/scrape     → Scraper tous les liens sans en ajouter
 """
+import logging
 import sys
 import os
 import shutil
 import json
-from pyngrok import ngrok
-
+import time
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, HttpUrl
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, HttpUrl, Field, field_validator
 from typing import List, Optional
 
 from config import config
@@ -38,16 +47,46 @@ from src.ingestion.loader import scrape_url
 
 app = FastAPI(
     title="RAG Local API",
-    description="Retrieval-Augmented Generation 100% local (Ollama + ChromaDB + sentence-transformers)",
+    description="Retrieval-Augmented Generation 100% local (HuggingFace + ChromaDB + sentence-transformers)",
     version="1.0.0",
 )
 
+# CORS — restreint aux origines connues (ajouter les domaines autorisés)
+ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:8001").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─── Rate Limiter simple en mémoire ───────────────────────────────────────
+
+_rate_limit_store: dict = defaultdict(list)
+RATE_LIMIT_MAX_REQUESTS = int(os.environ.get("RATE_LIMIT_MAX", "30"))  # par minute
+RATE_LIMIT_WINDOW = 60  # secondes
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Rate limiter par IP — bloque au-delà de RATE_LIMIT_MAX requêtes/minute."""
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+
+    # Nettoie les entrées expirées
+    _rate_limit_store[client_ip] = [
+        t for t in _rate_limit_store[client_ip] if now - t < RATE_LIMIT_WINDOW
+    ]
+
+    if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_MAX_REQUESTS:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Trop de requêtes. Réessayez dans une minute."},
+        )
+
+    _rate_limit_store[client_ip].append(now)
+    return await call_next(request)
 
 pipeline: Optional[RAGPipeline] = None
 ingestion_status: dict = {"running": False, "last_result": None, "error": None}
@@ -89,10 +128,18 @@ class ChatMessage(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    question: str
+    question: str = Field(..., min_length=3, max_length=2000)
     use_query_transform: bool = True
     stream: bool = False
-    history: List[ChatMessage] = []
+    history: List[ChatMessage] = Field(default=[], max_length=20)
+
+    @field_validator("question")
+    @classmethod
+    def question_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("La question ne peut pas être vide")
+        return v
 
 
 class QueryResponse(BaseModel):
@@ -305,39 +352,6 @@ async def reset_index():
     return {"message": "Index réinitialisé"}
 
 if __name__ == "__main__":
-    import threading
-    import time
-    import requests
     import uvicorn
-    from pyngrok import ngrok
-
-    # 1. Lancer FastAPI en thread (background)
-    def run():
-        uvicorn.run(app, host="0.0.0.0", port=8001)
-
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-
-    # 2. Attendre que le serveur soit prêt
-    url = "http://localhost:8001/health"
-
-    for _ in range(200):
-        try:
-            r = requests.get(url)
-            if r.status_code == 200:
-                print("✅ FastAPI ready!")
-                break
-        except:
-            pass
-        time.sleep(1)
-    else:
-        raise RuntimeError("❌ Server failed to start")
-
-    # 3. Lancer ngrok
-    public_url = ngrok.connect(8001)
-    print("🌍 Public URL:", public_url)
-
-    print("🚀 API + Tunnel OK")
-
-    while True:
-      time.sleep(60)
+    # Pour un tunnel ngrok, utiliser: python run_tunnel.py
+    uvicorn.run(app, host="0.0.0.0", port=8001)

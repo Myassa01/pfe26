@@ -1,9 +1,12 @@
 """Chargement de documents: PDF, DOCX, TXT, MD, HTML, URL."""
+import logging
 from pathlib import Path
 from typing import List, Dict, Any
 from dataclasses import dataclass
 import urllib.request
 import urllib.parse
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -128,7 +131,7 @@ def load_directory(directory: str) -> List[Document]:
                 doc = load_document(str(file))
                 if doc.content.strip():
                     docs.append(doc)
-                    print(f"  Chargé: {file.name} ({len(doc.content):,} chars)")
+                    logger.info("  Chargé: %s (%d chars)", file.name, len(doc.content))
             except Exception as e:
-                print(f"  Ignoré {file.name}: {e}")
+                logger.warning("  Ignoré %s: %s", file.name, e)
     return docs

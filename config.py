@@ -27,11 +27,11 @@ class Config:
     # ── BM25 ────────────────────────────────────────────────────────────────
     bm25_index_path: str = "./data/bm25_index.pkl"
 
-    # ── Chunking ─────────────────────────────────────────────────────────────
-    # ↑ chunk_size augmenté : les fiches individuelles font ~300 chars
-    # → un chunk = une fiche complète = meilleur contexte
-    chunk_size: int = 600
-    chunk_overlap: int = 50
+    # ── Chunking (en tokens, pas en caractères) ────────────────────────────
+    # Taille mesurée via le tokenizer du modèle d'embedding.
+    # 256 tokens ≈ 600-800 caractères français — une fiche RH complète.
+    chunk_size: int = 256
+    chunk_overlap: int = 32
 
     # ── Retrieval ────────────────────────────────────────────────────────────
     top_k_dense: int = 20   # ↑ augmenté pour ne pas rater des résultats
@@ -42,8 +42,6 @@ class Config:
     # ── Chemins ─────────────────────────────────────────────────────────────
     docs_dir: str = "./documents"
     data_dir: str = "./data"
-
-    ollama_base_url: str = "http://localhost:11434"
 
 
 config = Config()

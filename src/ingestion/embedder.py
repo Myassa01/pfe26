@@ -1,16 +1,19 @@
 """Génération d'embeddings locaux via sentence-transformers."""
+import logging
 from typing import List
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class Embedder:
     def __init__(self, model_name: str = "all-MiniLM-L6-v2", device: str = "cpu"):
         from sentence_transformers import SentenceTransformer
-        print(f"Chargement du modèle d'embedding: {model_name}...")
+        logger.info("Chargement du modèle d'embedding: %s...", model_name)
         self.model = SentenceTransformer(model_name, device=device)
         self.model_name = model_name
         self.dimension = self.model.get_sentence_embedding_dimension()
-        print(f"  Dimension: {self.dimension} | Device: {device}")
+        logger.info("  Dimension: %d | Device: %s", self.dimension, device)
 
     def embed(
         self,

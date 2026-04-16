@@ -1,6 +1,9 @@
 """Interface ChromaDB pour le vector store local persistant."""
+import logging
 from typing import List, Dict, Any
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStore:
@@ -12,7 +15,7 @@ class VectorStore:
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
         )
-        print(f"Vector store: {self.collection.count()} chunks indexés")
+        logger.info("Vector store: %d chunks indexés", self.collection.count())
 
     def add(
         self,
@@ -54,7 +57,8 @@ class VectorStore:
                 "id": doc_id,
                 "content": results["documents"][0][i],
                 "metadata": results["metadatas"][0][i],
-                "score": 1.0 - results["distances"][0][i],  # distance → similarity
+                # ChromaDB cosine distance ∈ [0, 2] → similarité ∈ [0, 1]
+                "score": 1.0 - (results["distances"][0][i] / 2.0),
                 "rank": i + 1,
             })
         return docs
@@ -69,4 +73,4 @@ class VectorStore:
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"},
         )
-        print("Vector store réinitialisé")
+        logger.info("Vector store réinitialisé")
