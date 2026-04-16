@@ -47,7 +47,10 @@ def load_excel_as_documents(path: str) -> List[Document]:
                     entry_parts.append(f"{header}: {value}")
             if not entry_parts:
                 continue
-            content = " | ".join(entry_parts)
+            # Préfixer avec le nom du fichier source (sans extension)
+            # pour aider le retriever et le LLM à distinguer les sources
+            source_label = p.stem.upper()  # DIRECTION, DEPARTEMENT, SERVICE, POSTE
+            content = f"[{source_label}] " + " | ".join(entry_parts)
             docs.append(Document(
                 content=content,
                 metadata={

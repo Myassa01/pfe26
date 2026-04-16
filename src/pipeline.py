@@ -21,8 +21,10 @@ from .generation.query_transform import QueryTransformer
 # Règle d'or : prompt court + instruction simple = meilleure réponse
 
 _SYSTEM_PROMPT = """Tu es un assistant RH. Réponds en français uniquement à partir du contexte fourni.
+Chaque entrée du contexte est préfixée par sa source entre crochets (ex: [DIRECTION], [DEPARTEMENT], [SERVICE], [POSTE]).
+Utilise UNIQUEMENT les données de la source pertinente à la question. Ignore les entrées provenant de sources non pertinentes.
 Si l'information n'est pas dans le contexte, réponds : "Je ne trouve pas cette information dans les documents."
-Cite le fichier source entre crochets."""
+N'invente JAMAIS de données. Cite uniquement ce qui apparaît explicitement dans le contexte."""
 
 _GENERATION_PROMPT = """Contexte:
 {context}
@@ -97,6 +99,53 @@ class RAGPipeline:
         """Détecte si la question demande une liste exhaustive."""
         q = question.lower()
         return any(kw in q for kw in _LIST_KEYWORDS)
+
+    # ── SOURCE-KEYWORD MAPPING ──────────────────────────────────────────────
+    # Mapping entre mots-clés dans la question et fichiers sources pertinents.
+    # Permet de filtrer les chunks non pertinents (ex: POSTE.xlsx quand on
+    # demande des "directeurs" → DIRECTION.xlsx est plus pertinent).
+    _SOURCE_KEYWORDS = {
+        "DIRECTION": ["directeur", "directeurs", "directrice", "directrices", "direction", "directions"],
+        "DEPARTEMENT": ["departement", "departements", "département", "départements", "chef de departement", "chefs de departement"],
+        "SERVICE": ["service", "services", "chef de service", "chefs de service"],
+    }
+
+    @staticmethod
+    def _detect_relevant_sources(question: str) -> set:
+        """Détecte les sources pertinentes à partir des mots-clés de la question."""
+        q = question.lower()
+        relevant = set()
+        for source, keywords in RAGPipeline._SOURCE_KEYWORDS.items():
+            if any(kw in q for kw in keywords):
+                relevant.add(source)
+        return relevant
+
+    @staticmethod
+    def _filter_by_source(chunks: list, relevant_sources: set) -> list:
+        """Filtre les chunks pour privilégier les sources pertinentes.
+        Si des sources pertinentes sont détectées, garde uniquement les chunks
+        provenant de ces sources + un petit nombre de chunks d'autres sources."""
+        if not relevant_sources:
+            return chunks  # Pas de filtre si aucune source détectée
+
+        from_relevant = []
+        from_other = []
+        for chunk in chunks:
+            fname = chunk["metadata"].get("filename", "").upper()
+            source_stem = fname.rsplit(".", 1)[0] if "." in fname else fname
+            if source_stem in relevant_sources:
+                from_relevant.append(chunk)
+            else:
+                from_other.append(chunk)
+
+        if not from_relevant:
+            return chunks  # Aucun chunk de la source pertinente → ne pas filtrer
+
+        # Garder tous les chunks pertinents + max 3 chunks d'autres sources (contexte)
+        result = from_relevant + from_other[:3]
+        logger.info("  → Filtre source: %d/%d chunks retenus (sources: %s)",
+                     len(result), len(chunks), ", ".join(relevant_sources))
+        return result
 
     # ── DÉDUPLICATION ────────────────────────────────────────────────────────
 
@@ -298,6 +347,11 @@ class RAGPipeline:
             self._retrieval_cache[cache_key] = reranked
         logger.info("        → %d chunks retenus", len(reranked))
 
+        # Étape 3.5 : Filtre par source pertinente (évite la pollution POSTE.xlsx)
+        relevant_sources = self._detect_relevant_sources(question)
+        if relevant_sources:
+            reranked = self._filter_by_source(reranked, relevant_sources)
+
         # Étape 4 : Génération
         logger.info("  [4/4] Génération LLM...")
         context      = self._format_context(reranked)
@@ -356,9 +410,8 @@ class RAGPipeline:
         """Formate le contexte de façon compacte pour les petits modèles."""
         parts = []
         for i, chunk in enumerate(chunks, 1):
-            fname = chunk["metadata"].get("filename", "inconnu")
-            # Format compact : juste le nom du fichier et le contenu
-            parts.append(f"[{fname}]\n{chunk['content']}")
+            # Le contenu est déjà préfixé par [SOURCE] grâce au loader
+            parts.append(chunk['content'])
         return "\n\n---\n\n".join(parts)
 
     def _extract_sources(self, chunks: List[Dict]) -> List[str]:

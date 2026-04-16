@@ -129,7 +129,7 @@ class ChatMessage(BaseModel):
 
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=3, max_length=2000)
-    use_query_transform: bool = True
+    use_query_transform: bool = False
     stream: bool = False
     history: List[ChatMessage] = Field(default=[], max_length=20)
 
