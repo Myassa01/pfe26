@@ -86,23 +86,51 @@ def _apply_overlap(chunks: List[str], overlap_tokens: int, count_fn: Callable[[s
     return result
 
 
+def _make_chunk_id(doc: Document, index: int) -> str:
+    """Génère un ID unique pour un chunk, incluant le row Excel si présent."""
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", doc.metadata["source"])
+    row_suffix = f"_r{doc.metadata['row']}" if "row" in doc.metadata else ""
+    return f"{safe_name}{row_suffix}__{index}"
+
+
 def chunk_document(
     doc: Document,
     chunk_size: int = 512,
     overlap: int = 64,
-    embedding_model: Optional[str] = None,
+    count_fn: Optional[Callable[[str], int]] = None,
 ) -> List[Chunk]:
-    count_fn = _make_token_counter(embedding_model)
+    if count_fn is None:
+        count_fn = lambda text: len(text) // 4
+
+    content = doc.content.strip()
+    if not content:
+        return []
+
+    # Court-circuit : si le document est déjà plus petit que chunk_size, pas de découpage
+    if count_fn(content) <= chunk_size:
+        chunk_id = _make_chunk_id(doc, 0)
+        return [Chunk(
+            id=chunk_id,
+            content=content,
+            metadata={
+                "source": doc.metadata["source"],
+                "filename": doc.metadata["filename"],
+                "extension": doc.metadata["extension"],
+                "chunk_index": 0,
+                "chunk_total": 1,
+                "chunk_id": chunk_id,
+            },
+        )]
+
     separators = ["\n\n", "\n", ". ", "! ", "? ", "; ", " "]
-    raw = _split_recursive(doc.content, chunk_size, separators, count_fn)
+    raw = _split_recursive(content, chunk_size, separators, count_fn)
     texts = _apply_overlap(raw, overlap, count_fn)
 
     chunks = []
-    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", doc.metadata["source"])
     for i, text in enumerate(texts):
         if not text.strip():
             continue
-        chunk_id = f"{safe_name}__{i}"
+        chunk_id = _make_chunk_id(doc, i)
         chunks.append(Chunk(
             id=chunk_id,
             content=text.strip(),
@@ -124,9 +152,19 @@ def chunk_documents(
     overlap: int = 64,
     embedding_model: Optional[str] = None,
 ) -> List[Chunk]:
+    # Créer le token counter UNE SEULE FOIS pour tous les documents
+    count_fn = _make_token_counter(embedding_model)
+
     all_chunks = []
+    files_seen: set = set()
     for doc in docs:
-        chunks = chunk_document(doc, chunk_size, overlap, embedding_model)
+        chunks = chunk_document(doc, chunk_size, overlap, count_fn)
         all_chunks.extend(chunks)
-        logger.info("  %s: %d chunks", doc.metadata['filename'], len(chunks))
+        # Log une seule fois par fichier (évite 1841 logs pour POSTE.xlsx)
+        fname = doc.metadata["filename"]
+        if fname not in files_seen:
+            files_seen.add(fname)
+    for fname in sorted(files_seen):
+        count = sum(1 for c in all_chunks if c.metadata["filename"] == fname)
+        logger.info("  %s: %d chunks", fname, count)
     return all_chunks

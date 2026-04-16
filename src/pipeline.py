@@ -255,9 +255,14 @@ class RAGPipeline:
                 reranked = self.reranker.rerank(
                     query=search_query,
                     documents=hybrid[:40],  # candidats élargis
+                    top_k=self.config.top_k_after_rerank,  # fallback si seuil filtre tout
                     min_score=self.config.rerank_min_score,
                     max_chunks=self.config.max_chunks_exhaustive,
                 )
+                if reranked:
+                    logger.info("        Scores reranker: [%.2f ... %.2f]",
+                                reranked[0].get("rerank_score", 0),
+                                reranked[-1].get("rerank_score", 0))
             else:
                 # Mode classique : top-k fixe
                 reranked = self.reranker.rerank(

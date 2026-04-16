@@ -41,9 +41,10 @@ class Config:
 
     # ── Mode exhaustif (questions de type "liste-moi tout") ─────────────────
     # Seuil de pertinence du reranker : tout chunk au-dessus est inclus.
-    # Cross-encoder mmarco : scores typiques entre -10 (hors sujet) et +10 (exact).
-    # Un seuil de 0.0 garde les chunks "au moins vaguement pertinents".
-    rerank_min_score: float = 0.0
+    # Cross-encoder mmarco : scores typiques entre -12 (hors sujet) et +12 (exact).
+    # Un seuil de -3.0 garde les chunks "au moins vaguement pertinents".
+    # (les scores mmarco sont souvent négatifs pour du contenu pertinent)
+    rerank_min_score: float = -3.0
     # Nombre max de chunks à envoyer au LLM en mode exhaustif
     max_chunks_exhaustive: int = 20
     # max_tokens élevé pour les réponses longues (listes, tableaux)

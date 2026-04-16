@@ -15,19 +15,51 @@ class Document:
     metadata: Dict[str, Any]
 
 def _load_excel(path: str) -> str:
-    """Charge un fichier Excel et convertit en texte structuré."""
+    """Charge un fichier Excel — fallback texte pour les formats simples."""
+    docs = load_excel_as_documents(path)
+    return "\n\n".join(d.content for d in docs)
+
+
+def load_excel_as_documents(path: str) -> List[Document]:
+    """Charge un fichier Excel et retourne UN Document par ligne.
+    Chaque entrée est un texte autonome avec les noms de colonnes,
+    ce qui permet au retriever de les associer sémantiquement
+    et au chunker de ne pas les couper arbitrairement."""
     import openpyxl
+    p = Path(path)
     wb = openpyxl.load_workbook(path, data_only=True)
-    parts = []
+    docs = []
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
-        parts.append(f"=== Feuille: {sheet_name} ===")
-        for row in ws.iter_rows(values_only=True):
-            # Ignore les lignes complètement vides
-            values = [str(v).strip() for v in row if v is not None]
-            if values:
-                parts.append(" | ".join(values))
-    return "\n".join(parts)
+        # Lire les headers
+        headers = []
+        for cell in ws[1]:
+            headers.append(str(cell.value).strip() if cell.value else "")
+
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+            values = [str(v).strip() if v is not None else "" for v in row]
+            if not any(values):
+                continue
+            # Construire un texte structuré "Colonne: Valeur" par ligne
+            entry_parts = []
+            for header, value in zip(headers, values):
+                if header and value:
+                    entry_parts.append(f"{header}: {value}")
+            if not entry_parts:
+                continue
+            content = " | ".join(entry_parts)
+            docs.append(Document(
+                content=content,
+                metadata={
+                    "source": str(p),
+                    "filename": p.name,
+                    "extension": p.suffix.lower(),
+                    "sheet": sheet_name,
+                    "row": row_idx,
+                    "size_bytes": p.stat().st_size,
+                },
+            ))
+    return docs
 
 def _load_pdf(path: str) -> str:
     from pypdf import PdfReader
@@ -125,13 +157,24 @@ def scrape_url(url: str, timeout: int = 15) -> Document:
 
 def load_directory(directory: str) -> List[Document]:
     docs = []
+    excel_exts = {".xlsx", ".xls"}
     for file in sorted(Path(directory).rglob("*")):
-        if file.is_file() and file.suffix.lower() in LOADERS:
-            try:
+        if not file.is_file():
+            continue
+        ext = file.suffix.lower()
+        if ext not in LOADERS:
+            continue
+        try:
+            if ext in excel_exts:
+                # Excel : un Document par ligne pour un meilleur retrieval
+                excel_docs = load_excel_as_documents(str(file))
+                docs.extend(excel_docs)
+                logger.info("  Chargé: %s (%d entrées Excel)", file.name, len(excel_docs))
+            else:
                 doc = load_document(str(file))
                 if doc.content.strip():
                     docs.append(doc)
                     logger.info("  Chargé: %s (%d chars)", file.name, len(doc.content))
-            except Exception as e:
-                logger.warning("  Ignoré %s: %s", file.name, e)
+        except Exception as e:
+            logger.warning("  Ignoré %s: %s", file.name, e)
     return docs

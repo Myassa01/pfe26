@@ -54,4 +54,16 @@ class CrossEncoderReranker:
             d["rank"] = rank
             results.append(d)
 
+        # Fallback : si le seuil a tout filtré, retourne quand même les top_k meilleurs
+        if not results and min_score is not None and scored:
+            logger.warning(
+                "Seuil min_score=%.2f a filtré tous les résultats (meilleur score=%.2f). "
+                "Fallback sur top-%d.", min_score, float(scored[0][0]), top_k,
+            )
+            for rank, (score, doc) in enumerate(scored[:top_k], 1):
+                d = doc.copy()
+                d["rerank_score"] = float(score)
+                d["rank"] = rank
+                results.append(d)
+
         return results
