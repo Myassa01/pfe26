@@ -39,6 +39,16 @@ class Config:
     top_k_after_rerank: int = 5
     rrf_k: int = 60
 
+    # ── Mode exhaustif (questions de type "liste-moi tout") ─────────────────
+    # Seuil de pertinence du reranker : tout chunk au-dessus est inclus.
+    # Cross-encoder mmarco : scores typiques entre -10 (hors sujet) et +10 (exact).
+    # Un seuil de 0.0 garde les chunks "au moins vaguement pertinents".
+    rerank_min_score: float = 0.0
+    # Nombre max de chunks à envoyer au LLM en mode exhaustif
+    max_chunks_exhaustive: int = 20
+    # max_tokens élevé pour les réponses longues (listes, tableaux)
+    llm_max_tokens_long: int = 2048
+
     # ── Chemins ─────────────────────────────────────────────────────────────
     docs_dir: str = "./documents"
     data_dir: str = "./data"

@@ -59,9 +59,12 @@ class HFClient:
         except Exception as e:
             logger.warning(f"⚠️  Préchauffage échoué (optionnel) : {e}")
 
-    def _optimize_prompt(self, prompt: str, max_length: int = 6000) -> str:
+    def _optimize_prompt(self, prompt: str, max_length: int = 12000) -> str:
+        """Tronque le prompt si nécessaire pour rester dans la fenêtre de contexte.
+        Limite par défaut à 12000 chars (~3000 tokens) pour laisser de la place
+        aux réponses longues (listes, tableaux)."""
         if len(prompt) > max_length:
-            prompt = prompt[:max_length] + "\n...\n[Réponse courte et concise]"
+            prompt = prompt[:max_length] + "\n...\n[Suite tronquée — réponds avec les données disponibles]"
         return prompt
 
     def _apply_chat_template(self, prompt: str, system: Optional[str]) -> str:

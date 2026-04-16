@@ -31,6 +31,15 @@ _GENERATION_PROMPT = """Contexte:
 
 Réponse:"""
 
+# Mots-clés qui indiquent une question de type "liste exhaustive"
+_LIST_KEYWORDS = [
+    "liste", "lister", "tous les", "toutes les", "tout le", "toute la",
+    "combien", "énumère", "énumérer", "ensemble des", "totalité",
+    "chaque", "l'ensemble", "récapitulatif", "récapitule",
+    "quels sont", "quelles sont", "donne-moi tous", "donne moi tous",
+    "affiche tous", "affiche toutes", "montre tous", "montre toutes",
+]
+
 
 class RAGPipeline:
     def __init__(self, config):
@@ -61,11 +70,17 @@ class RAGPipeline:
         self.query_transformer = QueryTransformer(llm=self.llm)
 
         # Cache LRU pour les résultats de retrieval (évite de refaire embedding+search+rerank)
-        self._retrieval_cache: Dict[str, List[Dict]] = {}
+        self._retrieval_cache: Dict[tuple, List[Dict]] = {}
         self._cache_max_size: int = 128
 
         logger.info("=" * 50)
         logger.info("Pipeline prêt.")
+
+    @staticmethod
+    def _is_list_question(question: str) -> bool:
+        """Détecte si la question demande une liste exhaustive."""
+        q = question.lower()
+        return any(kw in q for kw in _LIST_KEYWORDS)
 
     # ── DÉDUPLICATION ────────────────────────────────────────────────────────
 
@@ -206,6 +221,11 @@ class RAGPipeline:
         """Interroge le RAG et retourne la réponse avec ses sources."""
         start = time.time()
 
+        # Détection automatique : question de type "liste exhaustive" ?
+        exhaustive = self._is_list_question(question)
+        if exhaustive:
+            logger.info("  ⟹ Mode exhaustif détecté (question de type liste)")
+
         # Étape 1 : Transformation de la requête (optionnelle)
         if use_query_transform:
             logger.info("  [1/4] Transformation de la requête...")
@@ -216,7 +236,7 @@ class RAGPipeline:
             search_query = question
 
         # Étape 2+3 : Recherche hybride + Reranking (avec cache)
-        cache_key = search_query.strip().lower()
+        cache_key = (search_query.strip().lower(), exhaustive)
         if cache_key in self._retrieval_cache:
             logger.info("  [2/4] Recherche hybride... (cache hit)")
             logger.info("  [3/4] Reranking... (cache hit)")
@@ -230,11 +250,21 @@ class RAGPipeline:
             logger.info("        Dense: %d | Sparse: %d | RRF: %d", len(dense), len(sparse), len(hybrid))
 
             logger.info("  [3/4] Reranking...")
-            reranked = self.reranker.rerank(
-                query=search_query,
-                documents=hybrid[:20],
-                top_k=self.config.top_k_after_rerank,
-            )
+            if exhaustive:
+                # Mode exhaustif : seuil de pertinence, on garde tout ce qui est bon
+                reranked = self.reranker.rerank(
+                    query=search_query,
+                    documents=hybrid[:40],  # candidats élargis
+                    min_score=self.config.rerank_min_score,
+                    max_chunks=self.config.max_chunks_exhaustive,
+                )
+            else:
+                # Mode classique : top-k fixe
+                reranked = self.reranker.rerank(
+                    query=search_query,
+                    documents=hybrid[:20],
+                    top_k=self.config.top_k_after_rerank,
+                )
             # Mise en cache (LRU simple)
             if len(self._retrieval_cache) >= self._cache_max_size:
                 oldest_key = next(iter(self._retrieval_cache))
@@ -252,9 +282,14 @@ class RAGPipeline:
             history=history_text,
         )
 
+        # Adapter max_tokens : plus de tokens pour les listes exhaustives
+        max_tokens = self.config.llm_max_tokens_long if exhaustive else self.config.llm_max_tokens
+
         if stream:
             answer_parts = []
-            for token in self.llm.generate_stream(prompt=prompt, system=_SYSTEM_PROMPT):
+            for token in self.llm.generate_stream(
+                prompt=prompt, system=_SYSTEM_PROMPT, max_tokens=max_tokens,
+            ):
                 print(token, end="", flush=True)
                 answer_parts.append(token)
             print()
@@ -264,7 +299,7 @@ class RAGPipeline:
                 prompt=prompt,
                 system=_SYSTEM_PROMPT,
                 temperature=self.config.llm_temperature,
-                max_tokens=self.config.llm_max_tokens,
+                max_tokens=max_tokens,
             )
 
         elapsed = round(time.time() - start, 2)
