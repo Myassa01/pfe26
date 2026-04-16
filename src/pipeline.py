@@ -31,12 +31,28 @@ _GENERATION_PROMPT = """Contexte:
 
 Réponse:"""
 
+_GENERATION_PROMPT_LIST = """Contexte:
+{context}
+
+{history}Question: {question}
+
+IMPORTANT: La question demande une liste. Tu dois citer TOUS les éléments présents dans le contexte, sans en omettre.
+Formatte la réponse sous forme de liste numérotée. Ne résume pas, ne regroupe pas, liste chaque élément.
+
+Réponse:"""
+
 # Mots-clés qui indiquent une question de type "liste exhaustive"
 _LIST_KEYWORDS = [
+    # Pluriels explicites — "les directeurs", "les chefs", "les noms"
+    "donne moi les", "donne-moi les", "donnes moi les",
+    "donne les", "donne la liste",
+    "quels sont", "quelles sont",
+    "qui sont les",
+    "affiche les", "montre les", "cite les",
+    # Exhaustivité explicite
     "liste", "lister", "tous les", "toutes les", "tout le", "toute la",
     "combien", "énumère", "énumérer", "ensemble des", "totalité",
     "chaque", "l'ensemble", "récapitulatif", "récapitule",
-    "quels sont", "quelles sont", "donne-moi tous", "donne moi tous",
     "affiche tous", "affiche toutes", "montre tous", "montre toutes",
 ]
 
@@ -242,22 +258,27 @@ class RAGPipeline:
             logger.info("  [3/4] Reranking... (cache hit)")
             reranked = self._retrieval_cache[cache_key]
         else:
-            logger.info("  [2/4] Recherche hybride...")
+            logger.info("  [2/4] Recherche hybride%s...", " (mode exhaustif)" if exhaustive else "")
             query_emb = self.embedder.embed_single(search_query)
-            dense  = self.vector_store.search(query_emb, k=self.config.top_k_dense)
-            sparse = self.bm25.search(search_query, k=self.config.top_k_sparse)
+            if exhaustive:
+                # Mode exhaustif : remonter beaucoup plus de candidats
+                k_dense = min(self.config.max_chunks_exhaustive * 5, self.vector_store.count())
+                k_sparse = self.config.max_chunks_exhaustive * 5
+            else:
+                k_dense = self.config.top_k_dense
+                k_sparse = self.config.top_k_sparse
+            dense  = self.vector_store.search(query_emb, k=k_dense)
+            sparse = self.bm25.search(search_query, k=k_sparse)
             hybrid = reciprocal_rank_fusion(dense, sparse, k=self.config.rrf_k)
             logger.info("        Dense: %d | Sparse: %d | RRF: %d", len(dense), len(sparse), len(hybrid))
 
             logger.info("  [3/4] Reranking...")
             if exhaustive:
-                # Mode exhaustif : seuil de pertinence, on garde tout ce qui est bon
+                # Mode exhaustif : top-k élargi pour récupérer un max de résultats
                 reranked = self.reranker.rerank(
                     query=search_query,
-                    documents=hybrid[:40],  # candidats élargis
-                    top_k=self.config.top_k_after_rerank,  # fallback si seuil filtre tout
-                    min_score=self.config.rerank_min_score,
-                    max_chunks=self.config.max_chunks_exhaustive,
+                    documents=hybrid[:self.config.max_chunks_exhaustive * 3],
+                    top_k=self.config.max_chunks_exhaustive,
                 )
                 if reranked:
                     logger.info("        Scores reranker: [%.2f ... %.2f]",
@@ -281,7 +302,8 @@ class RAGPipeline:
         logger.info("  [4/4] Génération LLM...")
         context      = self._format_context(reranked)
         history_text = self._format_history(history) if history else ""
-        prompt = _GENERATION_PROMPT.format(
+        template = _GENERATION_PROMPT_LIST if exhaustive else _GENERATION_PROMPT
+        prompt = template.format(
             context=context,
             question=question,
             history=history_text,

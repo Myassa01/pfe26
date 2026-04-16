@@ -26,7 +26,31 @@ _STOPWORDS_FR = {
     "tout", "tous", "cette", "cet", "ces", "mon", "ton", "ma", "ta",
     "leur", "leurs", "même", "aussi", "mais", "donc", "or", "ni",
     "car", "si", "ne", "pas", "plus", "bien", "être", "avoir", "faire",
+    # Mots de requête fréquents (ne servent pas au matching BM25)
+    "donne", "donner", "donnez", "moi", "quel", "quelle", "quels", "quelles",
+    "comment", "existe", "existant", "existants", "sont",
+    "affiche", "afficher", "montre", "montrer", "cite", "citer",
 }
+
+
+def _stem_fr(token: str) -> str:
+    """Stemming minimal français — réduit pluriels et féminins courants.
+    Pas un vrai stemmer (Snowball) mais suffisant pour le matching BM25."""
+    if len(token) <= 3:
+        return token
+    # Pluriels : -aux → -al, -eaux → -eau, -s final
+    if token.endswith("eaux"):
+        return token[:-1]
+    if token.endswith("aux"):
+        return token[:-2] + "l"
+    if token.endswith("s") and not token.endswith("ss"):
+        token = token[:-1]
+    # Féminins courants : -trice → -teur, -euse → -eur
+    if token.endswith("trice"):
+        return token[:-4] + "eur"
+    if token.endswith("euse"):
+        return token[:-3] + "ur"
+    return token
 
 
 class BM25Search:
@@ -36,12 +60,10 @@ class BM25Search:
         self.bm25 = None
 
     def _tokenize(self, text: str) -> List[str]:
-        """Tokenisation avec gestion des accents français et stopwords."""
-        # Normalise les accents courants pour améliorer le matching
+        """Tokenisation avec gestion des accents français, stopwords et stemming."""
         text = text.lower()
-        # Garde les mots d'au moins 2 caractères, filtre stopwords
         tokens = re.findall(r"\b[a-zàâäéèêëîïôùûüçœæ]{2,}\b", text)
-        return [t for t in tokens if t not in _STOPWORDS_FR]
+        return [_stem_fr(t) for t in tokens if t not in _STOPWORDS_FR]
 
     def add_documents(self, documents: List[BM25Document]) -> None:
         from rank_bm25 import BM25Okapi
