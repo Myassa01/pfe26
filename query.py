@@ -60,8 +60,8 @@ def main():
             use_query_transform=use_transform,
             stream=use_stream,
         )
-        if not use_stream:
-            print(f"\n{result['answer']}")
+        # Toujours afficher (stream ou bypass LLM direct)
+        print(f"\n{result['answer']}")
         print(f"\n{'─'*60}")
         print(f"Sources   : {', '.join(result['sources']) or 'aucune'}")
         print(f"Chunks    : {result['chunks_used']}")
