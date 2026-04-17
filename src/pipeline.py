@@ -53,9 +53,10 @@ _LIST_KEYWORDS = [
     "affiche les", "montre les", "cite les",
     # Exhaustivité explicite
     "liste", "lister", "tous les", "toutes les", "tout le", "toute la",
-    "combien", "énumère", "énumérer", "ensemble des", "totalité",
-    "chaque", "l'ensemble", "récapitulatif", "récapitule",
+    "combien", "enumere", "enumerer", "ensemble des", "totalite",
+    "chaque", "l'ensemble", "recapitulatif", "recapitule",
     "affiche tous", "affiche toutes", "montre tous", "montre toutes",
+    "disponible", "disponibles", "existant", "existants",
 ]
 
 
@@ -95,10 +96,22 @@ class RAGPipeline:
         logger.info("Pipeline prêt.")
 
     @staticmethod
+    def _normalize_q(q: str) -> str:
+        import re as _re
+        q = q.lower()
+        for src, dst in [("é","e"),("è","e"),("ê","e"),("ë","e"),
+                         ("à","a"),("â","a"),("ä","a"),("î","i"),
+                         ("ï","i"),("ô","o"),("ù","u"),("û","u"),("ü","u")]:
+            q = q.replace(src, dst)
+        return q
+
+    @staticmethod
     def _is_list_question(question: str) -> bool:
         """Détecte si la question demande une liste exhaustive."""
-        q = question.lower()
-        return any(kw in q for kw in _LIST_KEYWORDS)
+        q = RAGPipeline._normalize_q(question)
+        # Aussi vérifier les keywords normalisés
+        normalized_keywords = [RAGPipeline._normalize_q(kw) for kw in _LIST_KEYWORDS]
+        return any(kw in q for kw in normalized_keywords)
 
     # ── SOURCE-KEYWORD MAPPING ──────────────────────────────────────────────
     # Mapping entre mots-clés dans la question et fichiers sources pertinents.
@@ -195,7 +208,7 @@ class RAGPipeline:
         """Pour les questions de type liste, tente d'extraire directement
         depuis les documents BM25 en mémoire, sans passer par le retriever.
         Retourne None si aucune extraction directe n'est possible."""
-        q = question.lower()
+        q = self._normalize_q(question)
 
         for keywords, column, sources in self._DIRECT_EXTRACT_PATTERNS:
             if not any(kw in q for kw in keywords):
@@ -383,40 +396,32 @@ class RAGPipeline:
         if exhaustive:
             logger.info("  ⟹ Mode exhaustif détecté (question de type liste)")
 
-        # ── Extraction directe (bypass retrieval pour les listes) ───────
+        # ── Extraction directe — BYPASS COMPLET DU LLM ─────────────────
+        # Le LLM hallucine et traduit en anglais → on formate directement en Python
         if exhaustive:
             direct = self._try_direct_extract(question)
             if direct:
-                # Construire le contexte directement sans passer par le retriever
-                context = self._format_context(direct)
-                history_text = self._format_history(history) if history else ""
-                template = _GENERATION_PROMPT_LIST
-                prompt = template.format(
-                    context=context, question=question, history=history_text,
+                items = [d["content"].rstrip(".").strip() for d in direct]
+                # Déduplication en gardant l'ordre
+                seen = set()
+                unique_items = []
+                for item in items:
+                    key = item.lower()
+                    if key not in seen and len(item) > 2:
+                        seen.add(key)
+                        unique_items.append(item)
+                answer = f"Il y a {len(unique_items)} résultats :\n" + "\n".join(
+                    f"{i+1}. {item}" for i, item in enumerate(unique_items)
                 )
-                max_tokens = self.config.llm_max_tokens_long
-                logger.info("  [4/4] Génération LLM (extraction directe, %d éléments)...", len(direct))
-                if stream:
-                    answer_parts = []
-                    for token in self.llm.generate_stream(
-                        prompt=prompt, system=_SYSTEM_PROMPT, max_tokens=max_tokens,
-                    ):
-                        print(token, end="", flush=True)
-                        answer_parts.append(token)
-                    print()
-                    answer = "".join(answer_parts)
-                else:
-                    answer = self.llm.generate(
-                        prompt=prompt, system=_SYSTEM_PROMPT,
-                        temperature=self.config.llm_temperature, max_tokens=max_tokens,
-                    )
                 elapsed = round(time.time() - start, 2)
+                sources = list({d["metadata"].get("filename", "?") for d in direct})
+                logger.info("  ✅ Réponse directe (sans LLM): %d éléments en %.2fs", len(unique_items), elapsed)
                 return {
-                    "question": question,
-                    "search_query": question,
-                    "answer": answer,
-                    "sources": self._extract_sources(direct),
-                    "chunks_used": len(direct),
+                    "question":        question,
+                    "search_query":    question,
+                    "answer":          answer,
+                    "sources":         sources,
+                    "chunks_used":     len(unique_items),
                     "elapsed_seconds": elapsed,
                 }
 
