@@ -49,7 +49,7 @@ def main():
     print(f"Embedding      : {config.embedding_model}")
 
     use_transform = args.transform
-    use_stream = not args.no_stream
+    use_stream = False  # désactivé — évite le double affichage
 
     def ask(question: str) -> None:
         print(f"\n{'='*60}")
@@ -61,7 +61,7 @@ def main():
             stream=use_stream,
         )
         # Toujours afficher (stream ou bypass LLM direct)
-        print(f"\n{result['answer']}")
+        print(f"\n{result['answer']}", flush=True)
         print(f"\n{'─'*60}")
         print(f"Sources   : {', '.join(result['sources']) or 'aucune'}")
         print(f"Chunks    : {result['chunks_used']}")
