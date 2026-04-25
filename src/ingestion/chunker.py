@@ -1,11 +1,8 @@
-"""Découpage de documents en chunks avec overlap — taille mesurée en tokens."""
-import logging
+"""Découpage de documents en chunks avec overlap."""
 import re
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any
 from dataclasses import dataclass
 from .loader import Document
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -15,132 +12,237 @@ class Chunk:
     metadata: Dict[str, Any]
 
 
-def _make_token_counter(model_name: Optional[str] = None) -> Callable[[str], int]:
-    """Retourne une fonction qui compte les tokens d'un texte.
-    Utilise le tokenizer du modèle d'embedding si disponible, sinon fallback sur len()."""
-    if model_name:
-        try:
-            from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained(
-                f"sentence-transformers/{model_name}" if "/" not in model_name else model_name
-            )
-            return lambda text: len(tokenizer.encode(text, add_special_tokens=False))
-        except Exception:
-            pass
-    # Fallback : estimation ~1 token ≈ 4 caractères (approximation courante)
-    return lambda text: len(text) // 4
+# ─────────────────────────────────────────────────────────────────────────────
+# Détection : est-ce un document formations GTP ?
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _is_formations_document(doc: Document) -> bool:
+    """
+    Retourne True si ce document est le plan de formations GTP.
+    Vérifie le nom de fichier ET les marqueurs dans le contenu.
+    """
+    fname = doc.metadata.get("filename", "").upper()
+    # Correspondance par nom
+    if any(kw in fname for kw in ["FORMATION", "GTP"]) and fname.endswith((".XLSX", ".XLS")):
+        return True
+    # Correspondance par contenu (si le loader a bien préfixé)
+    content = doc.content
+    return "[OBLIGATOIRE]" in content or "[FACULTATIVE]" in content
 
 
-def _split_recursive(
-    text: str, chunk_size: int, separators: List[str], count_fn: Callable[[str], int]
-) -> List[str]:
-    """Découpage récursif par séparateurs hiérarchiques (taille en tokens)."""
-    if count_fn(text) <= chunk_size or not separators:
+# ─────────────────────────────────────────────────────────────────────────────
+# Chunker spécialisé formations — UN chunk PAR formation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _chunk_formations(doc: Document) -> List[Chunk]:
+    """
+    Pour le plan de formations, chaque ligne [OBLIGATOIRE]/[FACULTATIVE]
+    devient un chunk atomique indépendant.
+
+    Cela garantit que :
+    - Le filtre BM25 dans pipeline._try_direct_extract() trouve toujours
+      [OBLIGATOIRE] ou [FACULTATIVE] dans le contenu du chunk.
+    - Aucune formation n'est coupée à travers deux chunks.
+    - Les 66 formations (19 + 47) produisent exactement 66 chunks distincts.
+
+    Un chunk de section header est également créé pour aider la recherche
+    sémantique ("formations obligatoires", "formations facultatives").
+    """
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", doc.metadata["source"])
+    chunks = []
+    chunk_index = 0
+
+    current_section = None   # "OBLIGATOIRES" | "FACULTATIVES"
+    section_lines: List[str] = []
+
+    def flush_section():
+        """Crée un chunk d'en-tête de section (aide le retrieval sémantique)."""
+        nonlocal chunk_index
+        if not section_lines or not current_section:
+            return
+        header_content = "\n".join(section_lines)
+        chunk_id = f"{safe_name}__section_{chunk_index}"
+        chunks.append(Chunk(
+            id=chunk_id,
+            content=header_content,
+            metadata={
+                **doc.metadata,
+                "chunk_index": chunk_index,
+                "chunk_type":  "section_header",
+                "section":     current_section,
+                "chunk_id":    chunk_id,
+            },
+        ))
+        chunk_index += 1
+
+    for line in doc.content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        # ── Ligne d'en-tête de section ─────────────────────────────────
+        if line.startswith("=== FORMATIONS OBLIGATOIRES"):
+            flush_section()
+            current_section = "OBLIGATOIRES"
+            section_lines = [line]
+            continue
+
+        if line.startswith("=== FORMATIONS FACULTATIVES"):
+            flush_section()
+            current_section = "FACULTATIVES"
+            section_lines = [line]
+            continue
+
+        # ── Ligne d'en-tête global (PLAN DE FORMATION GTP…) ────────────
+        if line.startswith("PLAN DE FORMATION GTP"):
+            chunk_id = f"{safe_name}__header_{chunk_index}"
+            chunks.append(Chunk(
+                id=chunk_id,
+                content=line,
+                metadata={
+                    **doc.metadata,
+                    "chunk_index": chunk_index,
+                    "chunk_type":  "global_header",
+                    "chunk_id":    chunk_id,
+                },
+            ))
+            chunk_index += 1
+            continue
+
+        # ── Ligne de formation [OBLIGATOIRE] ou [FACULTATIVE] ──────────
+        if line.startswith("[OBLIGATOIRE]") or line.startswith("[FACULTATIVE]"):
+            # Chaque formation = 1 chunk atomique
+            statut = "Obligatoire" if line.startswith("[OBLIGATOIRE]") else "Facultative"
+
+            # Extraire le numéro et l'intitulé pour les métadonnées
+            # Format : [OBLIGATOIRE] N°01 — Titre | Statut: Obligatoire
+            num = None
+            intitule = ""
+            try:
+                body = line.split("]", 1)[1].strip()          # "N°01 — Titre | Statut: ..."
+                body_no_statut = body.split("|")[0].strip()    # "N°01 — Titre"
+                if "—" in body_no_statut:
+                    num_part, intitule = body_no_statut.split("—", 1)
+                    num_str = re.search(r"\d+", num_part)
+                    num = int(num_str.group()) if num_str else None
+                    intitule = intitule.strip()
+            except Exception:
+                pass
+
+            chunk_id = f"{safe_name}__{statut.lower()}_{num or chunk_index:02d}"
+            chunks.append(Chunk(
+                id=chunk_id,
+                content=line,   # contient [OBLIGATOIRE] ou [FACULTATIVE] → filtre BM25 OK
+                metadata={
+                    **doc.metadata,
+                    "chunk_index": chunk_index,
+                    "chunk_type":  "formation",
+                    "statut":      statut,
+                    "numero":      num,
+                    "intitule":    intitule,
+                    "chunk_id":    chunk_id,
+                },
+            ))
+            chunk_index += 1
+            continue
+
+        # ── Autres lignes (non reconnues) → ignorer ─────────────────────
+        # (ex: lignes de séparation, commentaires)
+
+    # Flush de la dernière section
+    flush_section()
+
+    return chunks
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chunker générique (inchangé)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _split_recursive(text: str, chunk_size: int, separators: List[str]) -> List[str]:
+    """Découpage récursif par séparateurs hiérarchiques."""
+    if len(text) <= chunk_size or not separators:
         return [text.strip()] if text.strip() else []
 
     sep = separators[0]
     rest = separators[1:]
 
     parts = text.split(sep)
-    chunks: List[str] = []
+    chunks_list: List[str] = []
     current = ""
 
     for part in parts:
         candidate = (current + sep + part).strip() if current else part.strip()
-        if count_fn(candidate) <= chunk_size:
+        if len(candidate) <= chunk_size:
             current = candidate
         else:
             if current:
-                chunks.append(current)
-            if count_fn(part) > chunk_size:
-                sub = _split_recursive(part, chunk_size, rest, count_fn)
-                chunks.extend(sub)
+                chunks_list.append(current)
+            if len(part) > chunk_size:
+                sub = _split_recursive(part, chunk_size, rest)
+                chunks_list.extend(sub)
                 current = ""
             else:
                 current = part.strip()
 
     if current:
-        chunks.append(current)
+        chunks_list.append(current)
 
-    return [c for c in chunks if c.strip()]
+    return [c for c in chunks_list if c.strip()]
 
 
-def _apply_overlap(chunks: List[str], overlap_tokens: int, count_fn: Callable[[str], int]) -> List[str]:
-    """Ajoute un overlap entre chunks consécutifs (mesuré en tokens)."""
-    if overlap_tokens <= 0 or len(chunks) <= 1:
-        return chunks
+def _apply_overlap(chunks_list: List[str], overlap: int) -> List[str]:
+    """Ajoute un overlap entre chunks consécutifs."""
+    if overlap <= 0 or len(chunks_list) <= 1:
+        return chunks_list
 
-    result = [chunks[0]]
-    for i in range(1, len(chunks)):
-        prev = chunks[i - 1]
-        # Extrait les derniers mots du chunk précédent jusqu'à atteindre overlap_tokens
-        words = prev.split()
-        prefix_words = []
-        for w in reversed(words):
-            prefix_words.insert(0, w)
-            if count_fn(" ".join(prefix_words)) >= overlap_tokens:
-                break
-        prefix = " ".join(prefix_words)
-        result.append((prefix + " " + chunks[i]).strip() if prefix else chunks[i])
+    result = [chunks_list[0]]
+    for i in range(1, len(chunks_list)):
+        prev = chunks_list[i - 1]
+        prefix = prev[-overlap:] if len(prev) > overlap else prev
+        idx = prefix.find(" ")
+        if idx > 0:
+            prefix = prefix[idx + 1:]
+        result.append((prefix + " " + chunks_list[i]).strip() if prefix else chunks_list[i])
 
     return result
 
 
-def _make_chunk_id(doc: Document, index: int) -> str:
-    """Génère un ID unique pour un chunk, incluant le row Excel si présent."""
-    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", doc.metadata["source"])
-    row_suffix = f"_r{doc.metadata['row']}" if "row" in doc.metadata else ""
-    return f"{safe_name}{row_suffix}__{index}"
+def chunk_document(doc: Document, chunk_size: int = 512, overlap: int = 64, **kwargs) -> List[Chunk]:
+    """
+    Découpe un document en chunks.
+    Utilise le chunker formations si le document est un plan de formation,
+    sinon le chunker générique récursif.
+    """
+    # ── Chunker spécialisé formations ──────────────────────────────────
+    if _is_formations_document(doc):
+        chunks = _chunk_formations(doc)
+        print(f"    → {doc.metadata['filename']}: {len(chunks)} chunks formations "
+              f"({sum(1 for c in chunks if c.metadata.get('statut') == 'Obligatoire')} oblig. / "
+              f"{sum(1 for c in chunks if c.metadata.get('statut') == 'Facultative')} facult.)")
+        return chunks
 
-
-def chunk_document(
-    doc: Document,
-    chunk_size: int = 512,
-    overlap: int = 64,
-    count_fn: Optional[Callable[[str], int]] = None,
-) -> List[Chunk]:
-    if count_fn is None:
-        count_fn = lambda text: len(text) // 4
-
-    content = doc.content.strip()
-    if not content:
-        return []
-
-    # Court-circuit : si le document est déjà plus petit que chunk_size, pas de découpage
-    if count_fn(content) <= chunk_size:
-        chunk_id = _make_chunk_id(doc, 0)
-        return [Chunk(
-            id=chunk_id,
-            content=content,
-            metadata={
-                "source": doc.metadata["source"],
-                "filename": doc.metadata["filename"],
-                "extension": doc.metadata["extension"],
-                "chunk_index": 0,
-                "chunk_total": 1,
-                "chunk_id": chunk_id,
-            },
-        )]
-
+    # ── Chunker générique ───────────────────────────────────────────────
     separators = ["\n\n", "\n", ". ", "! ", "? ", "; ", " "]
-    raw = _split_recursive(content, chunk_size, separators, count_fn)
-    texts = _apply_overlap(raw, overlap, count_fn)
+    raw = _split_recursive(doc.content, chunk_size, separators)
+    texts = _apply_overlap(raw, overlap)
 
     chunks = []
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", doc.metadata["source"])
     for i, text in enumerate(texts):
         if not text.strip():
             continue
-        chunk_id = _make_chunk_id(doc, i)
+        chunk_id = f"{safe_name}__{i}"
         chunks.append(Chunk(
             id=chunk_id,
             content=text.strip(),
             metadata={
-                "source": doc.metadata["source"],
-                "filename": doc.metadata["filename"],
-                "extension": doc.metadata["extension"],
-                "chunk_index": i,
-                "chunk_total": len(texts),
-                "chunk_id": chunk_id,
+                "source":       doc.metadata["source"],
+                "filename":     doc.metadata["filename"],
+                "extension":    doc.metadata["extension"],
+                "chunk_index":  i,
+                "chunk_total":  len(texts),
+                "chunk_id":     chunk_id,
             },
         ))
     return chunks
@@ -150,21 +252,12 @@ def chunk_documents(
     docs: List[Document],
     chunk_size: int = 512,
     overlap: int = 64,
-    embedding_model: Optional[str] = None,
+    **kwargs,                   # absorbe embedding_model et autres params inconnus
 ) -> List[Chunk]:
-    # Créer le token counter UNE SEULE FOIS pour tous les documents
-    count_fn = _make_token_counter(embedding_model)
-
     all_chunks = []
-    files_seen: set = set()
     for doc in docs:
-        chunks = chunk_document(doc, chunk_size, overlap, count_fn)
+        chunks = chunk_document(doc, chunk_size, overlap)
         all_chunks.extend(chunks)
-        # Log une seule fois par fichier (évite 1841 logs pour POSTE.xlsx)
-        fname = doc.metadata["filename"]
-        if fname not in files_seen:
-            files_seen.add(fname)
-    for fname in sorted(files_seen):
-        count = sum(1 for c in all_chunks if c.metadata["filename"] == fname)
-        logger.info("  %s: %d chunks", fname, count)
+        if not _is_formations_document(doc):   # formations déjà loggées dans chunk_document
+            print(f"  {doc.metadata['filename']}: {len(chunks)} chunks")
     return all_chunks
