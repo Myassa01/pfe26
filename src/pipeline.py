@@ -58,9 +58,22 @@ _LIST_KEYWORDS = [
     "affiche tous", "affiche toutes", "montre tous", "montre toutes",
     # Disponibilité / existence
     "disponible", "disponibles", "existant", "existants",
-    # Formations
-    "formation", "formations", "obligatoire", "obligatoires",
+    # Formations (pluriel uniquement — évite "la formation X" qui est une requête ciblée)
+    "les formations", "toutes les formations", "plan de formation",
+    "obligatoire", "obligatoires",
     "facultatif", "facultatifs", "facultatives", "facultative",
+]
+
+# Mots-clés qui annulent le mode exhaustif même si un keyword liste est présent.
+# Ex: "donne moi des détails pour la formation X" → requête ciblée, pas une liste.
+_LIST_OVERRIDE_KEYWORDS = [
+    "détail", "détails", "detail", "details",
+    "explique", "expliquer", "explications", "explication",
+    "décris", "décrire", "description",
+    "présente", "présenter", "présentation",
+    "qu'est-ce que", "c'est quoi", "kesako",
+    "parle moi de", "dis moi",
+    "en quoi consiste", "que couvre", "que comprend",
 ]
 
 
@@ -160,9 +173,15 @@ class RAGPipeline:
 
     @staticmethod
     def _is_list_question(question: str) -> bool:
-        """Détecte si la question demande une liste exhaustive."""
-        q = question.lower()
-        return any(kw in q for kw in _LIST_KEYWORDS)
+        """Détecte si la question demande une liste exhaustive.
+        Les questions avec des mots-clés de détail (ex: 'détails pour la formation X')
+        sont des requêtes ciblées et ne doivent PAS déclencher le mode exhaustif."""
+        q = RAGPipeline._normalize_accents(question.lower())
+        # Si la question demande un détail/explication → jamais exhaustif
+        if any(RAGPipeline._normalize_accents(kw) in q for kw in _LIST_OVERRIDE_KEYWORDS):
+            return False
+        norm_kws = [RAGPipeline._normalize_accents(kw) for kw in _LIST_KEYWORDS]
+        return any(kw in q for kw in norm_kws)
 
     # ── SOURCE-KEYWORD MAPPING ──────────────────────────────────────────────
     # Mapping entre mots-clés dans la question et fichiers sources pertinents.
@@ -172,6 +191,14 @@ class RAGPipeline:
         "DIRECTION": ["directeur", "directeurs", "directrice", "directrices", "direction", "directions"],
         "DEPARTEMENT": ["departement", "departements", "département", "départements", "chef de departement", "chefs de departement"],
         "SERVICE": ["service", "services", "chef de service", "chefs de service"],
+        # Questions sur le contenu d'une formation → Explications_F.docx
+        "EXPLICATIONS_F": [
+            "détail", "détails", "detail", "details",
+            "explique", "explication", "explications",
+            "décris", "description", "présente",
+            "en quoi consiste", "que couvre", "que comprend",
+            "parle moi de", "qu'est-ce que",
+        ],
     }
     # Mots-clés qui excluent POSTE.xlsx (données organisationnelles vs fiches de poste)
     # "chantier" est une colonne dans DIRECTION/DEPARTEMENT/SERVICE, pas dans POSTE
@@ -179,15 +206,32 @@ class RAGPipeline:
         "chantier", "chantiers", "affectation", "affectations",
         "matricule", "matricules", "nom", "prenom", "prénom",
         "observation", "fonction",
+        # Questions sur une personne → DEPARTEMENT/SERVICE, pas POSTE
+        "qui est le chef", "qui est la chef", "qui est le directeur",
+        "qui est le responsable", "chef de departement", "chef de département",
+        "chef de service", "directeur de", "responsable de",
     ]
+
+    @staticmethod
+    def _normalize_accents(text: str) -> str:
+        """Normalise les accents français pour un matching robuste."""
+        for src, dst in [("é","e"),("è","e"),("ê","e"),("ë","e"),
+                         ("à","a"),("â","a"),("ä","a"),
+                         ("î","i"),("ï","i"),
+                         ("ô","o"),("ö","o"),
+                         ("ù","u"),("û","u"),("ü","u"),
+                         ("ç","c"),("œ","oe"),("æ","ae")]:
+            text = text.replace(src, dst)
+        return text
 
     @staticmethod
     def _detect_relevant_sources(question: str) -> set:
         """Détecte les sources pertinentes à partir des mots-clés de la question."""
-        q = question.lower()
+        q = RAGPipeline._normalize_accents(question.lower())
         relevant = set()
         for source, keywords in RAGPipeline._SOURCE_KEYWORDS.items():
-            if any(kw in q for kw in keywords):
+            norm_kws = [RAGPipeline._normalize_accents(kw) for kw in keywords]
+            if any(kw in q for kw in norm_kws):
                 relevant.add(source)
         return relevant
 
@@ -195,8 +239,9 @@ class RAGPipeline:
     def _should_exclude_poste(question: str) -> bool:
         """Détecte si la question porte sur des données organisationnelles
         (colonnes de DIRECTION/DEPARTEMENT/SERVICE) qui n'existent pas dans POSTE."""
-        q = question.lower()
-        return any(kw in q for kw in RAGPipeline._EXCLUDE_POSTE_KEYWORDS)
+        q = RAGPipeline._normalize_accents(question.lower())
+        exclude_kws = [RAGPipeline._normalize_accents(kw) for kw in RAGPipeline._EXCLUDE_POSTE_KEYWORDS]
+        return any(kw in q for kw in exclude_kws)
 
     @staticmethod
     def _filter_by_source(chunks: list, relevant_sources: set, exclude_poste: bool = False) -> list:
@@ -222,7 +267,7 @@ class RAGPipeline:
         from_other = []
         for chunk in filtered:
             fname = chunk["metadata"].get("filename", "")
-            source_stem = self._normalize_stem(fname)
+            source_stem = RAGPipeline._normalize_stem(fname)
             if source_stem in relevant_sources:
                 from_relevant.append(chunk)
             else:
@@ -516,8 +561,13 @@ class RAGPipeline:
         else:
             search_query = question
 
+        # Détection des sources pertinentes (fait ICI pour inclure dans le cache key)
+        relevant_sources = self._detect_relevant_sources(question)
+        exclude_poste    = self._should_exclude_poste(question)
+
         # Étape 2+3 : Recherche hybride + Reranking (avec cache)
-        cache_key = (search_query.strip().lower(), exhaustive)
+        cache_key = (search_query.strip().lower(), exhaustive,
+                     frozenset(relevant_sources), exclude_poste)
         if cache_key in self._retrieval_cache:
             logger.info("  [2/4] Recherche hybride... (cache hit)")
             logger.info("  [3/4] Reranking... (cache hit)")
@@ -564,8 +614,6 @@ class RAGPipeline:
         logger.info("        → %d chunks retenus", len(reranked))
 
         # Étape 3.5 : Filtre par source pertinente (évite la pollution POSTE.xlsx)
-        relevant_sources = self._detect_relevant_sources(question)
-        exclude_poste = self._should_exclude_poste(question)
         if relevant_sources or exclude_poste:
             reranked = self._filter_by_source(reranked, relevant_sources, exclude_poste)
 
