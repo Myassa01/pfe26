@@ -2,7 +2,6 @@
 import hashlib
 import logging
 import os
-import re
 import time
 from typing import List, Dict, Any, Optional
 
@@ -18,7 +17,8 @@ from .reranking.reranker import CrossEncoderReranker
 from .generation.llm import HFClient
 from .generation.query_transform import QueryTransformer
 
-# ── Prompts ──────────────────────────────────────────────────────────────────
+# ── Prompts optimisés pour petit modèle (qwen2.5:0.5b) ──────────────────────
+# Règle d'or : prompt court + instruction simple = meilleure réponse
 
 _SYSTEM_PROMPT = """Tu es un assistant RH. Réponds en français uniquement à partir du contexte fourni.
 Chaque entrée du contexte est préfixée par sa source entre crochets (ex: [DIRECTION], [DEPARTEMENT], [SERVICE], [POSTE]).
@@ -43,31 +43,31 @@ Formatte la réponse sous forme de liste numérotée. Ne résume pas, ne regroup
 
 Réponse:"""
 
-# ── Mots-clés liste exhaustive ────────────────────────────────────────────────
-
+# Mots-clés qui indiquent une question de type "liste exhaustive"
 _LIST_KEYWORDS = [
+    # Pluriels explicites — "les directeurs", "les chefs", "les noms"
     "donne moi les", "donne-moi les", "donnes moi les",
     "donne les", "donne la liste",
     "quels sont", "quelles sont",
     "qui sont les",
     "affiche les", "montre les", "cite les",
+    # Exhaustivité explicite
     "liste", "lister", "tous les", "toutes les", "tout le", "toute la",
-    "combien", "enumere", "enumerer", "ensemble des", "totalite",
-    "chaque", "l'ensemble", "recapitulatif", "recapitule",
+    "combien", "énumère", "énumérer", "ensemble des", "totalité",
+    "chaque", "l'ensemble", "récapitulatif", "récapitule",
     "affiche tous", "affiche toutes", "montre tous", "montre toutes",
+    # Disponibilité / existence
     "disponible", "disponibles", "existant", "existants",
-    # formations
-    "formation", "formations", "plan de formation",
-    "formations disponibles", "formations disponible",
-    "formations obligatoires", "formation obligatoire",
-    "formations facultatives", "formation facultative",
-    "obligatoire", "obligatoires", "facultatif", "facultatifs", "facultatives",
+    # Formations
+    "formation", "formations", "obligatoire", "obligatoires",
+    "facultatif", "facultatifs", "facultatives", "facultative",
 ]
 
 
 class RAGPipeline:
     def __init__(self, config):
         self.config = config
+
         logger.info("Initialisation du pipeline RAG local...")
         logger.info("=" * 50)
 
@@ -75,50 +75,106 @@ class RAGPipeline:
             model_name=config.embedding_model,
             device=config.embedding_device,
         )
+
         self.vector_store = VectorStore(
             persist_dir=config.chroma_persist_dir,
             collection_name=config.collection_name,
         )
+
         self.bm25 = BM25Search()
         self.bm25.load(config.bm25_index_path)
+
         self.reranker = CrossEncoderReranker(model_name=config.reranker_model)
-        self.llm = HFClient(model=config.llm_model)
+
+        self.llm = HFClient(
+            model=config.llm_model,
+        )
+
         self.query_transformer = QueryTransformer(llm=self.llm)
 
+        # Cache LRU
         self._retrieval_cache: Dict[tuple, List[Dict]] = {}
         self._cache_max_size: int = 128
+
+        # Formations en mémoire pour bypass LLM
+        self._formations_obligatoires, self._formations_facultatives = \
+            self._load_formations_from_excel(config.docs_dir)
 
         logger.info("=" * 50)
         logger.info("Pipeline prêt.")
 
-    # ── Normalisation ─────────────────────────────────────────────────────────
+    @staticmethod
+    def _normalize_stem(fname: str) -> str:
+        """SERVICE (1).xlsx → SERVICE"""
+        import re as _re
+        stem = fname.rsplit(".", 1)[0] if "." in fname else fname
+        stem = stem.upper().strip()
+        stem = _re.sub(r"\s*\(\d+\)\s*$", "", stem)
+        stem = _re.sub(r"\s*_\d+\s*$", "", stem)
+        return stem.strip()
 
     @staticmethod
-    def _normalize_q(q: str) -> str:
-        q = q.lower()
-        for src, dst in [("é","e"),("è","e"),("ê","e"),("ë","e"),
-                         ("à","a"),("â","a"),("ä","a"),("î","i"),
-                         ("ï","i"),("ô","o"),("ù","u"),("û","u"),("ü","u")]:
-            q = q.replace(src, dst)
-        return q
+    def _load_formations_from_excel(docs_dir: str):
+        """
+        Lit KAM_Formations_GTP.xlsx directement depuis le dossier documents.
+        Retourne (obligatoires: list[str], facultatives: list[str]).
+        Nécessaire car load_excel_as_documents ne gère pas ce fichier correctement
+        (le header réel N°/Intitulé/Statut est en ligne 4, pas en ligne 1).
+        """
+        import glob, openpyxl
+        patterns = ["*FORMATION*GTP*.xlsx","*KAM*FORMATION*.xlsx",
+                    "*formation*gtp*.xlsx","*GTP*.xlsx"]
+        found = []
+        for pat in patterns:
+            found.extend(glob.glob(f"{docs_dir}/**/{pat}", recursive=True))
+            found.extend(glob.glob(f"{docs_dir}/{pat}"))
+        if not found:
+            return [], []
+        path = found[0]
+        try:
+            wb = openpyxl.load_workbook(path, data_only=True)
+            ws = wb.active
+            obligatoires, facultatives, current_statut = [], [], None
+            for row in ws.iter_rows(values_only=True):
+                c0 = str(row[0]).strip() if row[0] else ""
+                c1 = str(row[1]).strip() if len(row)>1 and row[1] else ""
+                c2 = str(row[2]).strip() if len(row)>2 and row[2] else ""
+                joined = (c0+c1+c2).upper()
+                if "OBLIGATOIRE" in joined and not c0.isdigit():
+                    current_statut = "Obligatoire"; continue
+                if "FACULTATIV" in joined and not c0.isdigit():
+                    current_statut = "Facultative"; continue
+                if not c0.isdigit(): continue
+                statut = c2 if c2 else current_statut or "Inconnue"
+                if "obligatoire" in statut.lower():
+                    obligatoires.append(c1.strip())
+                else:
+                    facultatives.append(c1.strip())
+            wb.close()
+            logger.info("  ✓ %d formations chargées (%d oblig. / %d facult.)",
+                        len(obligatoires)+len(facultatives), len(obligatoires), len(facultatives))
+            return obligatoires, facultatives
+        except Exception as e:
+            logger.warning("  ⚠ Formations non chargées: %s", e)
+            return [], []
 
     @staticmethod
     def _is_list_question(question: str) -> bool:
-        q = RAGPipeline._normalize_q(question)
-        normalized_keywords = [RAGPipeline._normalize_q(kw) for kw in _LIST_KEYWORDS]
-        return any(kw in q for kw in normalized_keywords)
+        """Détecte si la question demande une liste exhaustive."""
+        q = question.lower()
+        return any(kw in q for kw in _LIST_KEYWORDS)
 
-    # ── Source keyword mapping ────────────────────────────────────────────────
-
+    # ── SOURCE-KEYWORD MAPPING ──────────────────────────────────────────────
+    # Mapping entre mots-clés dans la question et fichiers sources pertinents.
+    # Permet de filtrer les chunks non pertinents (ex: POSTE.xlsx quand on
+    # demande des "directeurs" → DIRECTION.xlsx est plus pertinent).
     _SOURCE_KEYWORDS = {
-        "DIRECTION":          ["directeur", "directeurs", "directrice", "directrices", "direction", "directions"],
-        "DEPARTEMENT":        ["departement", "departements", "département", "départements",
-                               "chef de departement", "chefs de departement"],
-        "SERVICE":            ["service", "services", "chef de service", "chefs de service"],
-        "KAM_FORMATIONS_GTP": ["formation", "formations", "plan de formation",
-                               "obligatoire", "obligatoires", "facultatif", "facultatifs", "facultatives"],
+        "DIRECTION": ["directeur", "directeurs", "directrice", "directrices", "direction", "directions"],
+        "DEPARTEMENT": ["departement", "departements", "département", "départements", "chef de departement", "chefs de departement"],
+        "SERVICE": ["service", "services", "chef de service", "chefs de service"],
     }
-
+    # Mots-clés qui excluent POSTE.xlsx (données organisationnelles vs fiches de poste)
+    # "chantier" est une colonne dans DIRECTION/DEPARTEMENT/SERVICE, pas dans POSTE
     _EXCLUDE_POSTE_KEYWORDS = [
         "chantier", "chantiers", "affectation", "affectations",
         "matricule", "matricules", "nom", "prenom", "prénom",
@@ -127,6 +183,7 @@ class RAGPipeline:
 
     @staticmethod
     def _detect_relevant_sources(question: str) -> set:
+        """Détecte les sources pertinentes à partir des mots-clés de la question."""
         q = question.lower()
         relevant = set()
         for source, keywords in RAGPipeline._SOURCE_KEYWORDS.items():
@@ -136,230 +193,125 @@ class RAGPipeline:
 
     @staticmethod
     def _should_exclude_poste(question: str) -> bool:
+        """Détecte si la question porte sur des données organisationnelles
+        (colonnes de DIRECTION/DEPARTEMENT/SERVICE) qui n'existent pas dans POSTE."""
         q = question.lower()
         return any(kw in q for kw in RAGPipeline._EXCLUDE_POSTE_KEYWORDS)
 
     @staticmethod
     def _filter_by_source(chunks: list, relevant_sources: set, exclude_poste: bool = False) -> list:
+        """Filtre les chunks pour privilégier les sources pertinentes.
+        Si des sources pertinentes sont détectées, garde uniquement les chunks
+        provenant de ces sources + un petit nombre de chunks d'autres sources."""
+
         filtered = chunks
 
+        # Exclure POSTE.xlsx si la question porte sur des données organisationnelles
         if exclude_poste and not relevant_sources:
             filtered = [c for c in filtered
                         if c["metadata"].get("filename", "").upper().rsplit(".", 1)[0] != "POSTE"]
             if filtered:
                 logger.info("  → Exclusion POSTE: %d/%d chunks retenus", len(filtered), len(chunks))
                 return filtered
-            return chunks
+            return chunks  # Fallback si tout filtré
 
         if not relevant_sources:
-            return chunks
+            return chunks  # Pas de filtre si aucune source détectée
 
-        from_relevant, from_other = [], []
+        from_relevant = []
+        from_other = []
         for chunk in filtered:
-            fname = chunk["metadata"].get("filename", "").upper()
-            stem  = fname.rsplit(".", 1)[0] if "." in fname else fname
-            if stem in relevant_sources:
+            fname = chunk["metadata"].get("filename", "")
+            source_stem = self._normalize_stem(fname)
+            if source_stem in relevant_sources:
                 from_relevant.append(chunk)
             else:
                 from_other.append(chunk)
 
         if not from_relevant:
-            return chunks
+            return chunks  # Aucun chunk de la source pertinente → ne pas filtrer
 
+        # Garder tous les chunks pertinents + max 3 chunks d'autres sources (contexte)
         result = from_relevant + from_other[:3]
         logger.info("  → Filtre source: %d/%d chunks retenus (sources: %s)",
-                    len(result), len(chunks), ", ".join(relevant_sources))
+                     len(result), len(chunks), ", ".join(relevant_sources))
         return result
 
-    # ── Détection chunk formations ────────────────────────────────────────────
-
-    _FORMATIONS_STEMS = {
-        "KAM_FORMATIONS_GTP", "FORMATIONS_GTP",
-        "KAM_FORMATION_GTP",  "FORMATIONS", "FORMATION_GTP",
-    }
-
-    def _is_formations_chunk(self, content: str, fname: str) -> bool:
-        """Double vérification : nom de fichier OU marqueur dans le contenu."""
-        stem = fname.upper().rsplit(".", 1)[0] if "." in fname else fname.upper()
-        name_ok    = stem in self._FORMATIONS_STEMS or "FORMATION" in stem
-        content_ok = ("[OBLIGATOIRE]" in content or "[FACULTATIVE]" in content
-                      or "FORMATIONS OBLIGATOIRES" in content.upper()
-                      or "FORMATIONS FACULTATIVES" in content.upper())
-        return name_ok or content_ok
-
-    # ── CORRECTIF 2 : Nettoyage du format de sortie des formations ────────────
-
-    @staticmethod
-    def _clean_formation_item(raw: str) -> str:
-        """
-        Transforme le format brut d'un chunk formation en affichage propre.
-
-        Entrée  : "[OBLIGATOIRE] N°01 — Gestion des Déchets | Statut: Obligatoire"
-        Sortie  : "Gestion des Déchets (Obligatoire)"
-
-        Entrée  : "[FACULTATIVE] N°41 — Rapport de Gestion | Statut: Facultative"
-        Sortie  : "Rapport de Gestion (Facultative)"
-        """
-        s = raw.strip()
-
-        # Déterminer le statut depuis le préfixe
-        if s.startswith("[OBLIGATOIRE]"):
-            statut = "Obligatoire"
-        elif s.startswith("[FACULTATIVE]"):
-            statut = "Facultative"
-        else:
-            # Pas un chunk formation reconnu → retourner tel quel
-            return s
-
-        # Retirer le préfixe [OBLIGATOIRE] / [FACULTATIVE]
-        s = re.sub(r"^\[(OBLIGATOIRE|FACULTATIVE)\]\s*", "", s)
-
-        # Retirer "N°XX — " ou "N°XX- " en début
-        s = re.sub(r"^N°\d+\s*[—\-–]\s*", "", s)
-
-        # Retirer la partie " | Statut: ..." en fin
-        s = re.sub(r"\s*\|\s*Statut\s*:.*$", "", s, flags=re.IGNORECASE)
-
-        titre = s.strip()
-
-        return f"{titre} ({statut})"
-
-    # ── Extraction directe formations (bypass LLM complet) ───────────────────
-
-    def _try_direct_extract_formations(self, question: str) -> Optional[List[Dict]]:
-        """
-        Bypass complet du RAG pour les questions sur les formations.
-
-        Les marqueurs [OBLIGATOIRE] et [FACULTATIVE] sont produits par
-        loader._load_excel_formations() — UN chunk par formation.
-
-        Retourne None si la question ne porte pas sur les formations,
-        laissant le flux normal prendre le relais.
-        """
-        q = self._normalize_q(question)
-
-        # ── CORRECTIF 1a : ask_all — ne pas inclure les variantes avec type précis ──
-        ask_all = any(kw in q for kw in [
-            "formations disponibles", "formations disponible",
-            "quelles sont les formations", "quels sont les formations",
-            "liste des formations", "toutes les formations",
-            "plan de formation",
-            "formations existantes",
-            "formations de l'entreprise", "formations dans cette entreprise",
-            "formations disponibles dans", "quelles formations",
-            "formation qui existe",
-            # NOTE : "formations qui existe" retiré car ambigu avec "obligatoires qui existent"
-        ])
-
-        # ── CORRECTIF 1b : ask_obligatoire — couvre toutes les variantes avec/sans s ──
-        ask_obligatoire = any(kw in q for kw in [
-            "formations obligatoires",   # pluriel complet
-            "formations obligatoire",    # pluriel + singulier statut  ← NOUVEAU
-            "formation obligatoire",     # singulier
-            "formation obligatoires",    # singulier + pluriel statut  ← NOUVEAU
-            "obligatoires",              # adjectif seul pluriel
-            "obligatoire",               # adjectif seul singulier     ← NOUVEAU
-        ])
-
-        # ── CORRECTIF 1b : ask_facultatif — idem ──
-        ask_facultatif = any(kw in q for kw in [
-            "formations facultatives",
-            "formations facultative",    # ← NOUVEAU
-            "formation facultative",
-            "formation facultatives",    # ← NOUVEAU
-            "facultatif", "facultatifs",
-            "facultatives", "facultative",
-        ])
-
-        # ── CORRECTIF 1c : la spécificité prime TOUJOURS sur ask_all ─────────
-        # Si l'utilisateur précise un type, ask_all est ignoré même s'il a matché
-        if ask_obligatoire or ask_facultatif:
-            ask_all = False
-
-        if not (ask_all or ask_obligatoire or ask_facultatif):
-            return None
-
-        # Éviter l'interférence avec d'autres questions RH
-        q_lower = question.lower()
-        if any(kw in q_lower for kw in ["directeur", "chef de", "departement",
-                                         "département", "chantier", "matricule",
-                                         "salaire", "badge"]):
-            return None
-
-        results = []
-        for doc in self.bm25.documents:
-            fname   = doc.metadata.get("filename", "")
-            content = doc.content
-
-            if not self._is_formations_chunk(content, fname):
-                continue
-
-            # Ignorer les chunks d'en-tête (pas des formations individuelles)
-            chunk_type = doc.metadata.get("chunk_type", "formation")
-            if chunk_type in ("global_header", "section_header"):
-                continue
-
-            content_upper = content.upper()
-
-            # ── Filtre par type ────────────────────────────────────────
-            if ask_obligatoire and not ask_all:
-                if "[OBLIGATOIRE]" not in content_upper:
-                    continue
-            elif ask_facultatif and not ask_all:
-                if "[FACULTATIVE]" not in content_upper:
-                    continue
-            # ask_all → pas de filtre
-
-            results.append({"content": content, "metadata": doc.metadata})
-
-        if results:
-            logger.info(
-                "  ⟹ Extraction directe formations: %d chunks "
-                "(all=%s, obligatoire=%s, facultatif=%s)",
-                len(results), ask_all, ask_obligatoire, ask_facultatif,
-            )
-            return results
-
-        logger.warning(
-            "  ⚠ Formations demandées mais aucun chunk trouvé.\n"
-            "    → Vérifier l'ingestion de KAM_Formations_GTP.xlsx\n"
-            "    → Vérifier que loader.py produit bien [OBLIGATOIRE]/[FACULTATIVE]"
-        )
-        return None
-
-    # ── Extraction directe générique ──────────────────────────────────────────
-
+    # ── EXTRACTION DIRECTE (bypass retrieval pour listes exhaustives) ──────
+    # Patterns question → colonne à extraire
     _DIRECT_EXTRACT_PATTERNS = [
+        # (mots-clés question, colonne à extraire, sources à scanner)
+        # colonne=None         → retourner toute la ligne
+        # colonne="CHANTIER"   → extraire les valeurs de la colonne CHANTIER
+        # colonne="FORMATION_ALL"    → lire Excel formations (toutes)
+        # colonne="FORMATION_OBLIG"  → lire Excel formations obligatoires uniquement
+        # colonne="FORMATION_FACULT" → lire Excel formations facultatives uniquement
+        # ⚠ Ordre important : patterns spécifiques AVANT les génériques
         (["chef de departement", "chefs de departement",
-          "chef de département", "chefs de département"],           None,       ["DEPARTEMENT"]),
-        (["chef de service", "chefs de service"],                   None,       ["SERVICE"]),
-        (["directeur", "directeurs", "directrice"],                 None,       ["DIRECTION"]),
-        (["chantier", "chantiers"],                                 "CHANTIER", ["DIRECTION", "DEPARTEMENT", "SERVICE"]),
-        (["service"],                                               "CHANTIER", ["SERVICE"]),
-        (["departement", "département"],                            "CHANTIER", ["DEPARTEMENT"]),
-        (["direction"],                                             "CHANTIER", ["DIRECTION"]),
+          "chef de département", "chefs de département"],         None,               ["DEPARTEMENT"]),
+        (["chef de service", "chefs de service"],                  None,               ["SERVICE"]),
+        (["directeur", "directeurs", "directrice"],                None,               ["DIRECTION"]),
+        (["chantier", "chantiers"],                                "CHANTIER",         ["DIRECTION", "DEPARTEMENT", "SERVICE"]),
+        (["service"],                                              "CHANTIER",         ["SERVICE"]),
+        (["departement", "département"],                           "CHANTIER",         ["DEPARTEMENT"]),
+        (["direction"],                                            "CHANTIER",         ["DIRECTION"]),
+        # Formations — lu directement depuis Excel (loader ne gère pas ce format)
+        (["formations obligatoires", "formations obligatoire",
+          "formation obligatoire", "obligatoires", "obligatoire"], "FORMATION_OBLIG",  ["KAM_FORMATIONS_GTP"]),
+        (["formations facultatives", "formations facultative",
+          "formation facultative", "facultatif", "facultatifs",
+          "facultatives", "facultative"],                          "FORMATION_FACULT", ["KAM_FORMATIONS_GTP"]),
+        (["formations disponibles", "formations disponible",
+          "quelles sont les formations", "liste des formations",
+          "toutes les formations", "plan de formation",
+          "formations existantes"],                                "FORMATION_ALL",    ["KAM_FORMATIONS_GTP"]),
     ]
 
     def _try_direct_extract(self, question: str) -> Optional[List[Dict]]:
-        q = self._normalize_q(question)
+        """Pour les questions de type liste, extrait directement sans passer par le retriever.
+        Gère 4 types de colonnes :
+          None              → toute la ligne (chefs, directeurs)
+          "CHANTIER"        → valeur de la colonne CHANTIER (noms services/depts/dirs)
+          "FORMATION_ALL"   → toutes les formations depuis Excel
+          "FORMATION_OBLIG" → formations obligatoires depuis Excel
+          "FORMATION_FACULT"→ formations facultatives depuis Excel
+        """
+        q = question.lower()
+        # Normaliser les accents pour le matching
+        for src, dst in [("é","e"),("è","e"),("ê","e"),("à","a"),
+                         ("â","a"),("î","i"),("ô","o"),("ù","u"),("û","u")]:
+            q = q.replace(src, dst)
 
-        # 1. Bypass formations en priorité
-        formations = self._try_direct_extract_formations(question)
-        if formations is not None:
-            return formations
-
-        # 2. Patterns génériques
         for keywords, column, sources in self._DIRECT_EXTRACT_PATTERNS:
             if not any(kw in q for kw in keywords):
                 continue
 
-            results    = []
-            seen_vals: set = set()
+            # ── Cas spécial : formations lues depuis Excel ─────────────────
+            if column in ("FORMATION_ALL", "FORMATION_OBLIG", "FORMATION_FACULT"):
+                if column == "FORMATION_OBLIG":
+                    items = [(f, "Obligatoire") for f in self._formations_obligatoires]
+                elif column == "FORMATION_FACULT":
+                    items = [(f, "Facultative") for f in self._formations_facultatives]
+                else:  # FORMATION_ALL
+                    items = ([(f, "Obligatoire") for f in self._formations_obligatoires]
+                           + [(f, "Facultative") for f in self._formations_facultatives])
+                if not items:
+                    logger.warning("  ⚠ Formations vides — vérifiez KAM_Formations_GTP.xlsx")
+                    continue
+                results = [{"content": f"{intitule} ({statut})",
+                            "metadata": {"filename": "KAM_Formations_GTP.xlsx"}}
+                           for intitule, statut in items]
+                logger.info("  ⟹ Extraction directe: %d formations (colonne=%s)",
+                            len(results), column)
+                return results
 
+            # ── Cas général : scanner les documents BM25 ──────────────────
+            results = []
+            seen_values = set()
             for doc in self.bm25.documents:
-                fname = doc.metadata.get("filename", "").upper()
-                stem  = fname.rsplit(".", 1)[0] if "." in fname else fname
-                if stem not in sources:
+                fname       = doc.metadata.get("filename", "")
+                source_stem = self._normalize_stem(fname)
+                if source_stem not in sources:
                     continue
 
                 if column:
@@ -369,8 +321,8 @@ class RAGPipeline:
                             key, val = part.split(":", 1)
                             key = key.strip().lstrip("[").rstrip("]").strip()
                             val = val.strip()
-                            if key.upper() == column and val and val.lower() not in seen_vals:
-                                seen_vals.add(val.lower())
+                            if key.upper() == column and val and val.lower() not in seen_values:
+                                seen_values.add(val.lower())
                                 results.append({"content": val, "metadata": doc.metadata})
                 else:
                     results.append({"content": doc.content, "metadata": doc.metadata})
@@ -382,11 +334,12 @@ class RAGPipeline:
 
         return None
 
-    # ── Déduplication ─────────────────────────────────────────────────────────
+    # ── DÉDUPLICATION ────────────────────────────────────────────────────────
 
     @staticmethod
     def _deduplicate_chunks(chunks: list) -> list:
-        seen: set = set()
+        """Supprime les chunks avec un contenu identique (hash SHA256)."""
+        seen = set()
         unique = []
         for chunk in chunks:
             h = hashlib.sha256(chunk.content.encode("utf-8")).hexdigest()
@@ -394,14 +347,16 @@ class RAGPipeline:
                 seen.add(h)
                 unique.append(chunk)
         removed = len(chunks) - len(unique)
-        if removed:
+        if removed > 0:
             logger.info("  → %d chunk(s) dupliqué(s) supprimé(s)", removed)
         return unique
 
-    # ── Ingestion ─────────────────────────────────────────────────────────────
+    # ── INGESTION ────────────────────────────────────────────────────────────
 
     def ingest(self, docs_dir: Optional[str] = None, reset: bool = False) -> Dict[str, Any]:
+        """Ingère les documents du dossier dans le RAG."""
         docs_dir = docs_dir or self.config.docs_dir
+
         logger.info("=" * 50)
         logger.info("INGESTION PIPELINE")
         logger.info("=" * 50)
@@ -412,14 +367,15 @@ class RAGPipeline:
             if os.path.exists(self.config.bm25_index_path):
                 os.remove(self.config.bm25_index_path)
 
+        # 1. Chargement
         logger.info("[1/4] Chargement des documents depuis '%s'...", docs_dir)
         documents = load_directory(docs_dir)
         if not documents:
             raise ValueError(f"Aucun document trouvé dans: {docs_dir}")
         logger.info("  → %d documents chargés", len(documents))
 
-        logger.info("[2/4] Découpage (chunk_size=%d, overlap=%d)...",
-                    self.config.chunk_size, self.config.chunk_overlap)
+        # 2. Chunking
+        logger.info("[2/4] Découpage (chunk_size=%d tokens, overlap=%d)...", self.config.chunk_size, self.config.chunk_overlap)
         chunks = chunk_documents(
             documents,
             chunk_size=self.config.chunk_size,
@@ -429,11 +385,17 @@ class RAGPipeline:
         logger.info("  → %d chunks créés", len(chunks))
         chunks = self._deduplicate_chunks(chunks)
 
+        # 3. Embeddings
         logger.info("[3/4] Génération des embeddings (%s)...", self.config.embedding_model)
-        texts      = [c.content for c in chunks]
-        embeddings = self.embedder.embed(texts, batch_size=self.config.embedding_batch_size, show_progress=True)
+        texts = [c.content for c in chunks]
+        embeddings = self.embedder.embed(
+            texts,
+            batch_size=self.config.embedding_batch_size,
+            show_progress=True,
+        )
         logger.info("  → Shape: %s", embeddings.shape)
 
+        # 4. Indexation
         logger.info("[4/4] Indexation (ChromaDB + BM25)...")
         self.vector_store.add(
             ids=[c.id for c in chunks],
@@ -441,17 +403,28 @@ class RAGPipeline:
             texts=[c.content for c in chunks],
             metadatas=[c.metadata for c in chunks],
         )
-        bm25_docs = [BM25Document(id=c.id, content=c.content, metadata=c.metadata) for c in chunks]
+
+        bm25_docs = [
+            BM25Document(id=c.id, content=c.content, metadata=c.metadata)
+            for c in chunks
+        ]
         self.bm25.add_documents(bm25_docs)
         self.bm25.save(self.config.bm25_index_path)
+
         self._retrieval_cache.clear()
 
         logger.info("=" * 50)
         logger.info("Ingestion terminée: %d chunks indexés", len(chunks))
         logger.info("=" * 50)
-        return {"documents": len(documents), "chunks": len(chunks), "embedding_dim": int(embeddings.shape[1])}
+
+        return {
+            "documents": len(documents),
+            "chunks": len(chunks),
+            "embedding_dim": int(embeddings.shape[1]),
+        }
 
     def ingest_documents(self, documents: List[Document]) -> Dict[str, Any]:
+        """Ingère une liste de Documents directement (sans lire un dossier)."""
         chunks = chunk_documents(
             documents,
             chunk_size=self.config.chunk_size,
@@ -460,67 +433,71 @@ class RAGPipeline:
         )
         if not chunks:
             return {"documents": len(documents), "chunks": 0, "embedding_dim": 0}
-        chunks     = self._deduplicate_chunks(chunks)
-        texts      = [c.content for c in chunks]
-        embeddings = self.embedder.embed(texts, batch_size=self.config.embedding_batch_size, show_progress=False)
+        chunks = self._deduplicate_chunks(chunks)
+
+        texts = [c.content for c in chunks]
+        embeddings = self.embedder.embed(
+            texts,
+            batch_size=self.config.embedding_batch_size,
+            show_progress=False,
+        )
         self.vector_store.add(
             ids=[c.id for c in chunks],
             embeddings=list(embeddings),
             texts=[c.content for c in chunks],
             metadatas=[c.metadata for c in chunks],
         )
-        bm25_docs = [BM25Document(id=c.id, content=c.content, metadata=c.metadata) for c in chunks]
+        bm25_docs = [
+            BM25Document(id=c.id, content=c.content, metadata=c.metadata)
+            for c in chunks
+        ]
         self.bm25.add_documents(bm25_docs)
         self.bm25.save(self.config.bm25_index_path)
         self._retrieval_cache.clear()
-        return {"documents": len(documents), "chunks": len(chunks), "embedding_dim": int(embeddings.shape[1])}
 
-    # ── Query ─────────────────────────────────────────────────────────────────
+        return {
+            "documents": len(documents),
+            "chunks": len(chunks),
+            "embedding_dim": int(embeddings.shape[1]),
+        }
+
+    # ── QUERY ────────────────────────────────────────────────────────────────
 
     def query(
         self,
         question: str,
-        use_query_transform: bool = False,
+        use_query_transform: bool = False,   # Désactivé par défaut pour petits modèles
         stream: bool = False,
         history: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
-        start      = time.time()
+        """Interroge le RAG et retourne la réponse avec ses sources."""
+        start = time.time()
+
+        # Détection automatique : question de type "liste exhaustive" ?
         exhaustive = self._is_list_question(question)
         if exhaustive:
-            logger.info("  ⟹ Mode exhaustif détecté")
+            logger.info("  ⟹ Mode exhaustif détecté (question de type liste)")
 
-        # ── Bypass direct ─────────────────────────────────────────────────
+        # ── Extraction directe (bypass retrieval pour les listes) ───────
         if exhaustive:
             direct = self._try_direct_extract(question)
             if direct:
-                # ── CORRECTIF 2 : nettoyage du format d'affichage ──────────
-                # Détecter si les résultats sont des formations (contiennent [OBLIGATOIRE]/[FACULTATIVE])
-                is_formations = any(
-                    d["content"].startswith("[OBLIGATOIRE]") or d["content"].startswith("[FACULTATIVE]")
-                    for d in direct
-                )
-
+                # ✅ BYPASS COMPLET DU LLM — formatage Python direct
                 seen: set = set()
                 unique_items = []
                 for d in direct:
-                    raw = d["content"].rstrip(".").strip()
-
-                    # Nettoyer uniquement les formations, pas les autres types
-                    if is_formations:
-                        item = self._clean_formation_item(raw)
-                    else:
-                        item = raw
-
-                    key = item.lower()
+                    item = d["content"].rstrip(".").strip()
+                    key  = item.lower()
                     if key not in seen and len(item) > 2:
                         seen.add(key)
                         unique_items.append(item)
-
                 answer  = (f"Il y a {len(unique_items)} résultats :\n"
-                           + "\n".join(f"{i+1}. {item}" for i, item in enumerate(unique_items)))
+                           + "\n".join(f"{i+1}. {item}"
+                                       for i, item in enumerate(unique_items)))
                 elapsed = round(time.time() - start, 2)
-                sources = list({d["metadata"].get("filename", "?") for d in direct})
-                logger.info("  ✅ Réponse directe (sans LLM): %d éléments en %.2fs", len(unique_items), elapsed)
+                sources = list({d["metadata"].get("filename","?") for d in direct})
+                logger.info("  ✅ Réponse directe (sans LLM): %d éléments en %.2fs",
+                            len(unique_items), elapsed)
                 return {
                     "question":        question,
                     "search_query":    question,
@@ -530,7 +507,7 @@ class RAGPipeline:
                     "elapsed_seconds": elapsed,
                 }
 
-        # ── Transformation de requête ──────────────────────────────────────
+        # Étape 1 : Transformation de la requête (optionnelle)
         if use_query_transform:
             logger.info("  [1/4] Transformation de la requête...")
             search_query = self.query_transformer.rewrite(question)
@@ -539,22 +516,22 @@ class RAGPipeline:
         else:
             search_query = question
 
-        # ── Recherche hybride + Reranking (avec cache) ────────────────────
+        # Étape 2+3 : Recherche hybride + Reranking (avec cache)
         cache_key = (search_query.strip().lower(), exhaustive)
         if cache_key in self._retrieval_cache:
-            logger.info("  [2+3/4] Cache hit")
+            logger.info("  [2/4] Recherche hybride... (cache hit)")
+            logger.info("  [3/4] Reranking... (cache hit)")
             reranked = self._retrieval_cache[cache_key]
         else:
             logger.info("  [2/4] Recherche hybride%s...", " (mode exhaustif)" if exhaustive else "")
             query_emb = self.embedder.embed_single(search_query)
-
             if exhaustive:
-                k_dense  = min(self.config.max_chunks_exhaustive * 5, self.vector_store.count())
+                # Mode exhaustif : remonter beaucoup plus de candidats
+                k_dense = min(self.config.max_chunks_exhaustive * 5, self.vector_store.count())
                 k_sparse = self.config.max_chunks_exhaustive * 5
             else:
-                k_dense  = self.config.top_k_dense
+                k_dense = self.config.top_k_dense
                 k_sparse = self.config.top_k_sparse
-
             dense  = self.vector_store.search(query_emb, k=k_dense)
             sparse = self.bm25.search(search_query, k=k_sparse)
             hybrid = reciprocal_rank_fusion(dense, sparse, k=self.config.rrf_k)
@@ -562,41 +539,55 @@ class RAGPipeline:
 
             logger.info("  [3/4] Reranking...")
             if exhaustive:
+                # Mode exhaustif : top-k élargi pour récupérer un max de résultats
                 reranked = self.reranker.rerank(
                     query=search_query,
                     documents=hybrid[:self.config.max_chunks_exhaustive * 3],
                     top_k=self.config.max_chunks_exhaustive,
                 )
+                if reranked:
+                    logger.info("        Scores reranker: [%.2f ... %.2f]",
+                                reranked[0].get("rerank_score", 0),
+                                reranked[-1].get("rerank_score", 0))
             else:
+                # Mode classique : top-k fixe
                 reranked = self.reranker.rerank(
                     query=search_query,
                     documents=hybrid[:20],
                     top_k=self.config.top_k_after_rerank,
                 )
-
+            # Mise en cache (LRU simple)
             if len(self._retrieval_cache) >= self._cache_max_size:
-                del self._retrieval_cache[next(iter(self._retrieval_cache))]
+                oldest_key = next(iter(self._retrieval_cache))
+                del self._retrieval_cache[oldest_key]
             self._retrieval_cache[cache_key] = reranked
-
         logger.info("        → %d chunks retenus", len(reranked))
 
-        # ── Filtre par source ──────────────────────────────────────────────
+        # Étape 3.5 : Filtre par source pertinente (évite la pollution POSTE.xlsx)
         relevant_sources = self._detect_relevant_sources(question)
-        exclude_poste    = self._should_exclude_poste(question)
+        exclude_poste = self._should_exclude_poste(question)
         if relevant_sources or exclude_poste:
             reranked = self._filter_by_source(reranked, relevant_sources, exclude_poste)
 
-        # ── Génération LLM ────────────────────────────────────────────────
+        # Étape 4 : Génération
         logger.info("  [4/4] Génération LLM...")
         context      = self._format_context(reranked)
         history_text = self._format_history(history) if history else ""
-        template     = _GENERATION_PROMPT_LIST if exhaustive else _GENERATION_PROMPT
-        prompt       = template.format(context=context, question=question, history=history_text)
-        max_tokens   = self.config.llm_max_tokens_long if exhaustive else self.config.llm_max_tokens
+        template = _GENERATION_PROMPT_LIST if exhaustive else _GENERATION_PROMPT
+        prompt = template.format(
+            context=context,
+            question=question,
+            history=history_text,
+        )
+
+        # Adapter max_tokens : plus de tokens pour les listes exhaustives
+        max_tokens = self.config.llm_max_tokens_long if exhaustive else self.config.llm_max_tokens
 
         if stream:
             answer_parts = []
-            for token in self.llm.generate_stream(prompt=prompt, system=_SYSTEM_PROMPT, max_tokens=max_tokens):
+            for token in self.llm.generate_stream(
+                prompt=prompt, system=_SYSTEM_PROMPT, max_tokens=max_tokens,
+            ):
                 print(token, end="", flush=True)
                 answer_parts.append(token)
             print()
@@ -610,6 +601,7 @@ class RAGPipeline:
             )
 
         elapsed = round(time.time() - start, 2)
+
         return {
             "question":        question,
             "search_query":    search_query,
@@ -619,19 +611,25 @@ class RAGPipeline:
             "elapsed_seconds": elapsed,
         }
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────────────────────
 
     def _format_history(self, history: List[Dict[str, str]]) -> str:
         if not history:
             return ""
         lines = []
+        # Garde seulement les 4 derniers échanges pour ne pas surcharger le contexte
         for msg in history[-4:]:
             role = "Utilisateur" if msg["role"] == "user" else "Assistant"
             lines.append(f"{role}: {msg['content']}")
         return "Historique:\n" + "\n".join(lines) + "\n\n"
 
     def _format_context(self, chunks: List[Dict]) -> str:
-        return "\n\n---\n\n".join(c["content"] for c in chunks)
+        """Formate le contexte de façon compacte pour les petits modèles."""
+        parts = []
+        for i, chunk in enumerate(chunks, 1):
+            # Le contenu est déjà préfixé par [SOURCE] grâce au loader
+            parts.append(chunk['content'])
+        return "\n\n---\n\n".join(parts)
 
     def _extract_sources(self, chunks: List[Dict]) -> List[str]:
         seen: set = set()
