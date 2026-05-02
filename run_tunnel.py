@@ -29,7 +29,7 @@ def main():
 
     # 2. Attendre que le serveur soit prêt
     health_url = f"http://localhost:{args.port}/health"
-    for _ in range(60):
+    for _ in range(240):
         try:
             r = requests.get(health_url)
             if r.status_code == 200:

@@ -226,6 +226,97 @@ class RAGPipeline:
                 kv[key] = val
         return kv
 
+    # ── VALIDATION LLM PAR BATCHES (filtrage des résultats d'extraction) ────
+
+    def _llm_validate_batch(
+        self,
+        question: str,
+        items: List[str],
+        batch_size: int = 10,
+    ) -> List[str]:
+        """Filtre une liste de candidats avec le LLM, batch par batch.
+
+        Pour chaque batch de N éléments numérotés, demande au LLM quels
+        numéros répondent réellement à la question. L'ordre est préservé.
+        En cas d'échec d'un batch (parse, timeout) → on conserve le batch
+        intact (failsafe : ne jamais perdre silencieusement de données).
+        """
+        if not items:
+            return items
+
+        kept: List[str] = []
+        n_batches = (len(items) + batch_size - 1) // batch_size
+        logger.info("  ⟹ Validation LLM: %d éléments en %d batch(es) de %d max",
+                    len(items), n_batches, batch_size)
+
+        for b_idx in range(n_batches):
+            start = b_idx * batch_size
+            batch = items[start:start + batch_size]
+            prompt = self._build_validation_prompt(question, batch)
+            try:
+                raw = self.llm.generate(
+                    prompt=prompt,
+                    system=("Tu es un filtre strict. Retourne UNIQUEMENT les numéros "
+                            "des éléments qui répondent EXACTEMENT à la question, "
+                            "séparés par des virgules. 0 si aucun."),
+                    temperature=0.0,
+                    max_tokens=60,
+                )
+                indices = self._parse_kept_indices(raw, len(batch))
+                if indices is None:  # parse échoué
+                    logger.warning("    Batch %d/%d: parse échoué (%r) — conservé",
+                                   b_idx + 1, n_batches, raw[:80])
+                    kept.extend(batch)
+                else:
+                    selected = [batch[i] for i in indices]
+                    logger.info("    Batch %d/%d: %d/%d retenus",
+                                b_idx + 1, n_batches, len(selected), len(batch))
+                    kept.extend(selected)
+            except Exception as e:
+                logger.warning("    Batch %d/%d: exception (%s) — conservé",
+                               b_idx + 1, n_batches, e)
+                kept.extend(batch)
+
+        logger.info("  ⟹ Validation LLM terminée: %d/%d éléments retenus",
+                    len(kept), len(items))
+        return kept
+
+    @staticmethod
+    def _build_validation_prompt(question: str, batch: List[str]) -> str:
+        numbered = "\n".join(f"{i + 1}. {item}" for i, item in enumerate(batch))
+        return (
+            f"Question utilisateur:\n{question}\n\n"
+            f"Candidats à valider:\n{numbered}\n\n"
+            f"Tâche: identifie les numéros des candidats qui répondent EXACTEMENT "
+            f"à la question (rejette les hors-sujet, les doublons orthographiques, "
+            f"les fautes de frappe). Retourne UNIQUEMENT les numéros séparés par "
+            f"des virgules. Si aucun ne convient, retourne 0.\n\n"
+            f"Numéros retenus:"
+        )
+
+    @staticmethod
+    def _parse_kept_indices(raw: str, batch_size: int) -> Optional[List[int]]:
+        """Parse la réponse LLM en liste d'indices 0-based.
+        Retourne None si la réponse est inintelligible (aucun nombre trouvé).
+        Retourne [] si le LLM répond '0' (= aucun retenu)."""
+        if not raw or not raw.strip():
+            return None
+        nums = re.findall(r"\d+", raw)
+        if not nums:
+            return None
+        # Si la réponse contient uniquement '0' → aucun retenu
+        unique_nums = {int(n) for n in nums}
+        if unique_nums == {0}:
+            return []
+        indices: List[int] = []
+        seen: set = set()
+        for n in nums:
+            i = int(n) - 1  # 1-indexed → 0-indexed
+            if 0 <= i < batch_size and i not in seen:
+                seen.add(i)
+                indices.append(i)
+        return indices
+
     # ── INGESTION ────────────────────────────────────────────────────────────
 
     def ingest(self, docs_dir: Optional[str] = None, reset: bool = False) -> Dict[str, Any]:
@@ -358,27 +449,36 @@ class RAGPipeline:
         if exhaustive and source:
             direct = self._generic_direct_extract(intent_data)
             if direct:
+                # Dédup case-insensitive + accent-insensitive (fusionne SOCIALE/SOCIALES/SOCIOAL)
                 seen: set = set()
                 unique_items = []
                 for d in direct:
                     item = d["content"].rstrip(".").strip()
-                    key = item.lower()
+                    key = self._fold(item)
                     if key not in seen and len(item) > 2:
                         seen.add(key)
                         unique_items.append(item)
-                answer = (f"Il y a {len(unique_items)} résultats :\n"
+
+                # Validation LLM par batches : filtre hors-sujet et doublons sémantiques
+                validated = self._llm_validate_batch(
+                    question=question,
+                    items=unique_items,
+                    batch_size=self.config.validation_batch_size,
+                ) if getattr(self.config, "validation_enabled", True) else unique_items
+
+                answer = (f"Il y a {len(validated)} résultats :\n"
                           + "\n".join(f"{i+1}. {item}"
-                                      for i, item in enumerate(unique_items)))
+                                      for i, item in enumerate(validated)))
                 elapsed = round(time.time() - start, 2)
                 sources = list({d["metadata"].get("filename", "?") for d in direct})
-                logger.info("  ✅ Réponse directe (sans LLM): %d éléments en %.2fs",
-                            len(unique_items), elapsed)
+                logger.info("  ✅ Réponse directe (avec validation LLM): %d éléments en %.2fs",
+                            len(validated), elapsed)
                 return {
                     "question":        question,
                     "search_query":    question,
                     "answer":          answer,
                     "sources":         sources,
-                    "chunks_used":     len(unique_items),
+                    "chunks_used":     len(validated),
                     "elapsed_seconds": elapsed,
                     "intent":          intent_data,
                 }

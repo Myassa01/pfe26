@@ -47,6 +47,13 @@ class Config:
     # max_tokens élevé pour les réponses longues (listes, tableaux)
     llm_max_tokens_long: int = 1024
 
+    # ── Validation LLM par batches (filtre les résultats d'extraction directe) ──
+    # Active une étape de filtrage : les éléments extraits sont passés au LLM
+    # par groupes de N pour éliminer les hors-sujet, doublons orthographiques,
+    # fautes de frappe ("SOCIALE"/"SOCIALES"/"SOCIOAL" → fusionnés).
+    validation_enabled: bool = True
+    validation_batch_size: int = 10
+
     # ── Chemins ─────────────────────────────────────────────────────────────
     docs_dir: str = "./documents"
     data_dir: str = "./data"
