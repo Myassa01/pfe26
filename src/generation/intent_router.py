@@ -109,33 +109,42 @@ _SYSTEM_PROMPT = (
 
 _PROMPT_TEMPLATE = """Classifie la question utilisateur en JSON selon le schéma ci-dessous.
 
-Sources disponibles:
+Sources disponibles (chaque ligne = 1 table, avec ses colonnes et des exemples de valeurs):
 {schema_block}
 
 Format JSON attendu (strict, une seule ligne):
 {{"intent":"list|detail|qa","source":"<NOM_SOURCE_OU_null>","column":"<NOM_COLONNE_OU_null>","exhaustive":true|false,"filter":null}}
 
 Règles:
-- "intent":"list" si la question demande une énumération (ex: "liste", "tous", "donne-moi les", "quels sont").
-- "intent":"detail" si la question demande une explication (ex: "explique", "détails", "c'est quoi").
-- "intent":"qa" pour toute question ciblée (ex: "qui est X", "combien").
-- "source": EXACTEMENT un nom parmi la liste, ou null.
-- "column": choisir la colonne dont la VALEUR répond directement à la question (regarder les exemples dans le schéma), ou null si la question vise toute la ligne.
+- "intent":"list" si la question demande une énumération ("liste", "tous", "donne-moi les", "quels sont").
+- "intent":"detail" si la question demande une explication ("explique", "détails").
+- "intent":"qa" pour toute question ciblée ("qui est X", "combien").
+- "source": EXACTEMENT un nom de table parmi la liste, ou null si vraiment aucune ne convient.
+- "column": EXACTEMENT un nom de colonne de la table choisie. Regarde les exemples de valeurs pour identifier la bonne colonne. null si la question vise toute la ligne.
 - "exhaustive":true si intent="list", sinon false.
-- "filter": dict {{"COLONNE":"valeur"}} pour CHAQUE contrainte mentionnée dans la question (ex: "du département X", "obligatoires", "en CDI"). Permet plusieurs clés. null si aucune contrainte.
+- "filter": dict {{"NOM_COLONNE_REEL":"valeur"}} pour les contraintes. UTILISE LE VRAI NOM DE COLONNE de la table (vu dans le schéma), JAMAIS un nom inventé.
 
-Exemples:
-Q: "Quels sont les services existants ?"
+Exemples (basés sur le schéma ci-dessus):
+Q: "Donne-moi la liste des services"
 JSON: {{"intent":"list","source":"SERVICE","column":null,"exhaustive":true,"filter":null}}
 
-Q: "Quels sont les services du département Informatique ?"
-JSON: {{"intent":"list","source":"SERVICE","column":null,"exhaustive":true,"filter":{{"DEPARTEMENT":"Informatique"}}}}
+Q: "Quels sont les directeurs ?"
+JSON: {{"intent":"list","source":"DIRECTION","column":null,"exhaustive":true,"filter":null}}
 
-Q: "Liste des formations obligatoires"
-JSON: {{"intent":"list","source":"KAM_FORMATIONS_GTP","column":null,"exhaustive":true,"filter":{{"STATUT":"Obligatoire"}}}}
+Q: "Liste des chefs de département"
+JSON: {{"intent":"list","source":"DEPARTEMENT","column":null,"exhaustive":true,"filter":null}}
 
-Q: "Qui est le chef du département RH ?"
-JSON: {{"intent":"qa","source":"DEPARTEMENT","column":null,"exhaustive":false,"filter":{{"DEPARTEMENT":"RH"}}}}
+Q: "Services de la direction DRH"
+JSON: {{"intent":"list","source":"SERVICE","column":null,"exhaustive":true,"filter":{{"SHORT_LIBELLE_DIRECTION":"DRH"}}}}
+
+Q: "Postes dans l'activité électricité"
+JSON: {{"intent":"list","source":"POSTE","column":null,"exhaustive":true,"filter":{{"LIBELLE_ACTIVITE":"électricité"}}}}
+
+Q: "Qui est le chef du département DRH ?"
+JSON: {{"intent":"qa","source":"DEPARTEMENT","column":null,"exhaustive":false,"filter":{{"SHORT_LIBELLE_DIRECTION":"DRH"}}}}
+
+Q: "Combien de directions ?"
+JSON: {{"intent":"list","source":"DIRECTION","column":null,"exhaustive":true,"filter":null}}
 
 Question: {question}
 JSON:"""
@@ -196,27 +205,34 @@ class IntentRouter:
         return re.sub(r"\s+", " ", q)
 
     def _build_schema_block(self, schema: Dict[str, dict]) -> str:
-        """Pour chaque source, expose toutes les colonnes + 1 échantillon par colonne.
-        Crucial pour que le LLM comprenne quelle colonne contient quoi
-        (ex: 'CHANTIER' contient des noms de services, pas un chantier au sens BTP)."""
+        """Expose chaque source avec colonnes + 2-3 valeurs d'exemple par colonne.
+
+        Indispensable pour que le LLM devine la sémantique des colonnes
+        techniques (ex: 'CHANTIER'='Service Informatique' → c'est un nom de
+        service, pas un chantier de BTP). Sans samples, le routing échoue.
+        """
         if not schema:
             return "(aucune source disponible)"
         lines = []
         for name, info in schema.items():
             if info.get("is_doc"):
-                lines.append(f"- {name}: document texte (descriptions/explications)")
+                lines.append(f"* {name} (document texte) — descriptions, explications")
                 continue
             cols = info.get("columns", [])
             samples = info.get("samples", {})
-            # Décrire chaque colonne avec un échantillon pour désambiguïser
-            col_descs = []
+            row_count = info.get("row_count", "?")
+
+            # En-tête : nom + nb lignes
+            lines.append(f"* {name} ({row_count} lignes) :")
+
+            # Une ligne par colonne, avec 2-3 exemples
             for col in cols:
                 vals = samples.get(col, [])
                 if vals:
-                    col_descs.append(f'{col}="{vals[0]}"')
+                    sample_str = ", ".join(f'"{v}"' for v in vals[:3])
+                    lines.append(f"    - {col} → ex: {sample_str}")
                 else:
-                    col_descs.append(col)
-            lines.append(f"- {name}: {{ {', '.join(col_descs)} }}")
+                    lines.append(f"    - {col}")
         return "\n".join(lines)
 
     def _parse_json(self, raw: str) -> Optional[dict]:

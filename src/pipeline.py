@@ -102,10 +102,14 @@ class RAGPipeline:
         schema: Dict[str, dict] = {}
 
         # 1. Tables structurées : on enrichit avec des échantillons (utile pour le LLM)
+        # On ne montre que les colonnes "user" (pas les ID/codes techniques)
+        # pour économiser des tokens dans le prompt et éviter de désorienter le LLM.
         for table_name, info in self.structured.schema().items():
+            user_cols = self.structured.tables[table_name].get("user_columns") or info["columns"]
             schema[table_name] = {
-                "columns": info["columns"],
-                "samples": self.structured.samples(table_name),
+                "columns": user_cols,
+                "samples": self.structured.samples(table_name, max_per_col=3),
+                "row_count": info.get("row_count", 0),
                 "is_doc": False,
                 "filename": info["filename"],
                 "structured": True,

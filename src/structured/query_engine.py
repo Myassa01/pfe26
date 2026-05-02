@@ -116,14 +116,68 @@ class StructuredQueryEngine:
             rows,
         )
 
+        # Détection automatique des colonnes "techniques" (ID, codes internes…) :
+        # une colonne est technique si la majorité de ses valeurs sont numériques
+        # ou des codes courts (≤6 chars). On les masquera dans les sorties
+        # destinées à l'utilisateur final, tout en les gardant requêtable en SQL.
+        technical_cols = self._detect_technical_columns(sql_table, unique_headers, len(rows))
+
         self.tables[table_name] = {
             "filename": path.name,
             "columns": unique_headers,
+            "technical_columns": technical_cols,  # set
+            "user_columns": [c for c in unique_headers if c not in technical_cols],
             "row_count": len(rows),
             "sql_table": sql_table,
         }
-        logger.info("  ✓ %s → table %s (%d lignes, %d colonnes)",
-                    path.name, sql_table, len(rows), len(unique_headers))
+        if technical_cols:
+            logger.info("  ✓ %s → table %s (%d lignes, %d colonnes ; techniques: %s)",
+                        path.name, sql_table, len(rows), len(unique_headers),
+                        ", ".join(sorted(technical_cols)))
+        else:
+            logger.info("  ✓ %s → table %s (%d lignes, %d colonnes)",
+                        path.name, sql_table, len(rows), len(unique_headers))
+
+    def _detect_technical_columns(self, sql_table: str, columns: List[str], row_count: int) -> set:
+        """Détecte les colonnes ID/code interne — à masquer dans les sorties user.
+
+        Heuristiques (additives) :
+            - >70% des valeurs non-vides sont purement numériques  → technique
+            - >70% des valeurs ont len ≤ 6 ET sont alphanumériques  → technique
+            - Toutes les valeurs sont uniques ET numériques        → ID-like
+            - Nom de colonne dans une liste de mots-clés évidents  → technique
+        """
+        if row_count == 0:
+            return set()
+        sample_size = min(row_count, 200)
+        techincal_name_hints = {"ID", "CODE", "CD"}  # évident
+        technical: set = set()
+        for col in columns:
+            # Hint par nom (préfixe / mot complet)
+            up = col.upper()
+            if up in techincal_name_hints or up.startswith(("CD_", "ID_", "NUM_")):
+                technical.add(col)
+                continue
+            try:
+                rows = self.conn.execute(
+                    f'SELECT "{col}" FROM "{sql_table}" '
+                    f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\' '
+                    f'LIMIT {sample_size}'
+                ).fetchall()
+            except Exception:
+                continue
+            if not rows:
+                continue
+            vals = [str(r[0]).strip() for r in rows]
+            n = len(vals)
+            numeric = sum(1 for v in vals if v.replace(".", "").replace(",", "").replace("-", "").isdigit())
+            short_alphanum = sum(1 for v in vals if len(v) <= 6 and v.replace("_", "").replace("-", "").isalnum())
+            if numeric / n > 0.7:
+                technical.add(col)
+            elif short_alphanum / n > 0.7 and numeric / n > 0.3:
+                # codes mixtes (lettres + chiffres courts, type 904300)
+                technical.add(col)
+        return technical
 
     # ── Helpers normalisation ─────────────────────────────────────────────
 
@@ -213,6 +267,7 @@ class StructuredQueryEngine:
         column: Optional[str] = None,
         filters: Optional[Dict[str, str]] = None,
         distinct: bool = True,
+        hide_technical: bool = True,
     ) -> List[Dict[str, Any]]:
         """Retourne les valeurs d'une colonne (ou les lignes complètes si column=None).
 
@@ -241,7 +296,12 @@ class StructuredQueryEngine:
         if sql_col:
             select_clause = f'"{sql_col}"'
         else:
-            cols = self.tables[table]["columns"]
+            # Sortie utilisateur : on retire les colonnes techniques (ID, codes…)
+            # à moins que l'appelant demande explicitement de les garder.
+            if hide_technical:
+                cols = self.tables[table].get("user_columns") or self.tables[table]["columns"]
+            else:
+                cols = self.tables[table]["columns"]
             select_clause = ", ".join(f'"{c}"' for c in cols)
 
         distinct_kw = "DISTINCT " if distinct else ""
@@ -296,11 +356,12 @@ class StructuredQueryEngine:
                     len(results), table, sql_col or "ALL", filters or "-")
         return results
 
-    def _list_values_fallback(self, table, column, filters, distinct):
+    def _list_values_fallback(self, table, column, filters, distinct, hide_technical=True):
         """Si strip_accents indispo, on rappatrie tout et on filtre en Python."""
         sql_table = self.tables[table]["sql_table"]
         meta_filename = self.tables[table]["filename"]
         cols = self.tables[table]["columns"]
+        user_cols = (self.tables[table].get("user_columns") or cols) if hide_technical else cols
         rows = self.conn.execute(f'SELECT * FROM "{sql_table}"').fetchall()
         sql_col = self._resolve_column(table, column) if column else None
 
@@ -333,7 +394,8 @@ class StructuredQueryEngine:
                 results.append({"content": str(val).strip(),
                                 "metadata": {"filename": meta_filename, "table": table, "column": sql_col}})
             else:
-                pairs = [f"{c}: {v}" for c, v in kv.items() if v is not None and str(v).strip()]
+                pairs = [f"{c}: {v}" for c, v in kv.items()
+                         if c in user_cols and v is not None and str(v).strip()]
                 if pairs:
                     results.append({"content": f"[{table}] " + " | ".join(pairs),
                                     "metadata": {"filename": meta_filename, "table": table}})

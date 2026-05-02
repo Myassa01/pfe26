@@ -197,6 +197,10 @@ class QueryResponse(BaseModel):
     sources: List[str]
     chunks_used: int
     elapsed_seconds: float
+    # Classification de l'IntentRouter — utile pour debug côté frontend.
+    # Permet de voir si le bypass DuckDB s'est déclenché (intent.source non null)
+    # ou si le pipeline est tombé sur le RAG classique.
+    intent: Optional[dict] = None
 
 
 # ─── Endpoints ──────────────────────────────────────────────────────────────

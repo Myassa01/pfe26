@@ -55,7 +55,7 @@ def main():
 
     # 2. Attendre que le serveur soit prêt — backoff exponentiel borné
     health_url = f"http://localhost:{args.port}/health"
-    deadline = time.time() + 120  # 2 min max
+    deadline = time.time() + 240  # 4 min max
     delay = 0.5
     while time.time() < deadline:
         try:
