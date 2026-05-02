@@ -436,6 +436,8 @@ class RAGPipeline:
         # 2. Bypass LLM : requête SQL directe pour les sources tabulaires
         if exhaustive and source:
             direct = self._structured_query(intent_data)
+            # Récupère les warnings éventuels du moteur SQL (filtres ignorés, fallback tokenisé…)
+            sql_warnings = list(self.structured.last_warnings)
             if direct:
                 # Dédup case-insensitive + accent-insensitive (fusionne SOCIALE/SOCIALES/SOCIOAL)
                 seen: set = set()
@@ -454,9 +456,21 @@ class RAGPipeline:
                     batch_size=self.config.validation_batch_size,
                 ) if getattr(self.config, "validation_enabled", True) else unique_items
 
-                answer = (f"Il y a {len(validated)} résultats :\n"
-                          + "\n".join(f"{i+1}. {item}"
-                                      for i, item in enumerate(validated)))
+                # Construction de la réponse : on préfixe avec les warnings
+                # (ex: "Filtre ignoré : LIBELLE_ACTIVITE absent de SERVICE")
+                # pour que l'utilisateur ne soit pas trompé par un résultat sans filtre.
+                prefix_lines = []
+                if sql_warnings:
+                    prefix_lines.append("⚠ Note :")
+                    for w in sql_warnings:
+                        prefix_lines.append(f"  • {w}")
+                    prefix_lines.append("")  # ligne vide
+
+                body = (f"Il y a {len(validated)} résultats :\n"
+                        + "\n".join(f"{i+1}. {item}"
+                                    for i, item in enumerate(validated)))
+                answer = "\n".join(prefix_lines) + body if prefix_lines else body
+
                 elapsed = round(time.time() - start, 2)
                 sources = list({d["metadata"].get("filename", "?") for d in direct})
                 logger.info("  ✅ Réponse directe (avec validation LLM): %d éléments en %.2fs",
@@ -469,6 +483,7 @@ class RAGPipeline:
                     "chunks_used":     len(validated),
                     "elapsed_seconds": elapsed,
                     "intent":          intent_data,
+                    "warnings":        sql_warnings,
                 }
 
         # 3. Transformation de la requête (optionnelle)

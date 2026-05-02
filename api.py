@@ -201,6 +201,9 @@ class QueryResponse(BaseModel):
     # Permet de voir si le bypass DuckDB s'est déclenché (intent.source non null)
     # ou si le pipeline est tombé sur le RAG classique.
     intent: Optional[dict] = None
+    # Warnings du moteur SQL (filtres ignorés, fallback tokenisé…).
+    # Permet à l'utilisateur de comprendre pourquoi un résultat est partiel.
+    warnings: List[str] = []
 
 
 # ─── Endpoints ──────────────────────────────────────────────────────────────

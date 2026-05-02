@@ -151,8 +151,11 @@ def check_structured_query(pipeline, questions):
                 distinct=True,
             )
             print(f"    → {len(results)} résultat(s)")
+            # Warnings du moteur SQL (filtres ignorés, fallback tokenisé…)
+            for w in pipeline.structured.last_warnings:
+                print(f"    ⚠ {w}")
             for r in results[:5]:
-                print(f"      • {r['content'][:80]}")
+                print(f"      • {r['content'][:120]}")
             if len(results) > 5:
                 print(f"      ... ({len(results) - 5} autres)")
             if not results:

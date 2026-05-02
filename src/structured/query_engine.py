@@ -34,6 +34,9 @@ class StructuredQueryEngine:
         # Mapping nom_normalisé (UPPERCASE, sans extension) → métadonnées de la table
         # {table_name: {"filename": str, "columns": [str], "row_count": int}}
         self.tables: Dict[str, Dict[str, Any]] = {}
+        # Warnings de la dernière requête (filtres ignorés, fallback déclenché…).
+        # Lecture par le pipeline pour informer l'utilisateur.
+        self.last_warnings: List[str] = []
         self.docs_dir = docs_dir
         self._load_all(docs_dir)
 
@@ -277,18 +280,31 @@ class StructuredQueryEngine:
 
         filters : appliqués en LOWER(col) LIKE LOWER(?), insensible accents/casse.
         """
+        self.last_warnings = []  # reset à chaque appel
         table = self._normalize_stem(table) if table not in self.tables else table
         if table not in self.tables:
             return []
         sql_table = self.tables[table]["sql_table"]
         meta_filename = self.tables[table]["filename"]
+        all_cols = self.tables[table]["columns"]
 
         # Résoudre les noms de colonnes (filter + select) vs schéma réel
+        # Les filtres sur des colonnes INCONNUES sont droppés ET signalés :
+        # silence = trompeur (l'utilisateur croit que son filtre a été appliqué).
         resolved_filters: List[tuple] = []  # [(sql_col, value), ...]
+        dropped_filters: List[str] = []
         for fkey, fval in (filters or {}).items():
-            sql_col = self._resolve_column(table, fkey)
-            if sql_col and fval:
-                resolved_filters.append((sql_col, str(fval)))
+            sql_col_filter = self._resolve_column(table, fkey)
+            if sql_col_filter and fval:
+                resolved_filters.append((sql_col_filter, str(fval)))
+            else:
+                dropped_filters.append(f"{fkey}={fval!r}")
+        if dropped_filters:
+            msg = (f"Filtre(s) ignoré(s) : {', '.join(dropped_filters)} "
+                   f"— colonne(s) absente(s) de la table {table} "
+                   f"(colonnes disponibles : {', '.join(all_cols)}).")
+            logger.warning("  ⚠ %s", msg)
+            self.last_warnings.append(msg)
 
         sql_col = self._resolve_column(table, column) if column else None
 
@@ -330,6 +346,46 @@ class StructuredQueryEngine:
             # Fallback si strip_accents indispo (DuckDB ancien) → comparaison lower simple
             logger.warning("StructuredQueryEngine: requête SQL échouée (%s) — fallback lower", e)
             return self._list_values_fallback(table, column, filters, distinct)
+
+        # ── Fallback tokenisé : si 0 résultats avec un filter, retenter en
+        # tokenisant la valeur pour absorber les fautes de frappe et variations
+        # ("Chef de départment" → AND chef AND depart).
+        if not rows and resolved_filters:
+            tokenized_where = []
+            tokenized_params: List[str] = []
+            if sql_col:
+                tokenized_where.append(f'"{sql_col}" IS NOT NULL')
+                tokenized_where.append(f'TRIM("{sql_col}") <> \'\'')
+            had_tokens = False
+            for col, val in resolved_filters:
+                tokens = [t for t in re.split(r"\s+", val.strip()) if len(t) >= 3]
+                # On garde le préfixe (4-5 premiers chars) pour matcher les variations
+                # ex: "départment" → "dépar" matche "département"
+                tokens = [t[:5] if len(t) > 5 else t for t in tokens]
+                for t in tokens:
+                    tokenized_where.append(
+                        f'strip_accents(LOWER(CAST("{col}" AS VARCHAR))) '
+                        f'LIKE strip_accents(LOWER(?))'
+                    )
+                    tokenized_params.append(f"%{t}%")
+                    had_tokens = True
+            if had_tokens:
+                fallback_sql = (
+                    f'SELECT {distinct_kw}{select_clause} FROM "{sql_table}" '
+                    f'WHERE ' + " AND ".join(tokenized_where)
+                )
+                try:
+                    cursor = self.conn.execute(fallback_sql, tokenized_params)
+                    rows = cursor.fetchall()
+                    col_names = [d[0] for d in cursor.description]
+                    if rows:
+                        msg = (f"Aucun résultat pour le filtre exact, "
+                               f"{len(rows)} résultat(s) en match approximatif "
+                               f"(tokens: {tokenized_params}).")
+                        logger.info("  ⟹ %s", msg)
+                        self.last_warnings.append(msg)
+                except Exception as e:
+                    logger.warning("Fallback tokenisé échoué: %s", e)
 
         results: List[Dict[str, Any]] = []
         for row in rows:
