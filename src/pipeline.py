@@ -1,7 +1,13 @@
-"""Pipeline RAG principal — orchestration de toutes les couches."""
+"""Pipeline RAG principal — orchestration de toutes les couches.
+
+Routage intelligent : aucune liste de mots-clés FR. Le schéma des sources est
+découvert automatiquement au démarrage et un IntentRouter LLM classifie
+chaque question pour décider du bypass / de la source / de la colonne.
+"""
 import hashlib
 import logging
 import os
+import re
 import time
 from typing import List, Dict, Any, Optional
 
@@ -16,9 +22,9 @@ from .retrieval.hybrid_search import reciprocal_rank_fusion
 from .reranking.reranker import CrossEncoderReranker
 from .generation.llm import HFClient
 from .generation.query_transform import QueryTransformer
+from .generation.intent_router import IntentRouter, SchemaDiscovery
 
 # ── Prompts optimisés pour petit modèle (qwen2.5:0.5b) ──────────────────────
-# Règle d'or : prompt court + instruction simple = meilleure réponse
 
 _SYSTEM_PROMPT = """Tu es un assistant RH. Réponds en français uniquement à partir du contexte fourni.
 Chaque entrée du contexte est préfixée par sa source entre crochets (ex: [DIRECTION], [DEPARTEMENT], [SERVICE], [POSTE]).
@@ -42,39 +48,6 @@ IMPORTANT: La question demande une liste. Tu dois citer TOUS les éléments pré
 Formatte la réponse sous forme de liste numérotée. Ne résume pas, ne regroupe pas, liste chaque élément.
 
 Réponse:"""
-
-# Mots-clés qui indiquent une question de type "liste exhaustive"
-_LIST_KEYWORDS = [
-    # Pluriels explicites — "les directeurs", "les chefs", "les noms"
-    "donne moi les", "donne-moi les", "donnes moi les",
-    "donne les", "donne la liste",
-    "quels sont", "quelles sont",
-    "qui sont les",
-    "affiche les", "montre les", "cite les",
-    # Exhaustivité explicite
-    "liste", "lister", "tous les", "toutes les", "tout le", "toute la",
-    "combien", "énumère", "énumérer", "ensemble des", "totalité",
-    "chaque", "l'ensemble", "récapitulatif", "récapitule",
-    "affiche tous", "affiche toutes", "montre tous", "montre toutes",
-    # Disponibilité / existence
-    "disponible", "disponibles", "existant", "existants",
-    # Formations (pluriel uniquement — évite "la formation X" qui est une requête ciblée)
-    "les formations", "toutes les formations", "plan de formation",
-    "obligatoire", "obligatoires",
-    "facultatif", "facultatifs", "facultatives", "facultative",
-]
-
-# Mots-clés qui annulent le mode exhaustif même si un keyword liste est présent.
-# Ex: "donne moi des détails pour la formation X" → requête ciblée, pas une liste.
-_LIST_OVERRIDE_KEYWORDS = [
-    "détail", "détails", "detail", "details",
-    "explique", "expliquer", "explications", "explication",
-    "décris", "décrire", "description",
-    "présente", "présenter", "présentation",
-    "qu'est-ce que", "c'est quoi", "kesako",
-    "parle moi de", "dis moi",
-    "en quoi consiste", "que couvre", "que comprend",
-]
 
 
 class RAGPipeline:
@@ -105,13 +78,13 @@ class RAGPipeline:
 
         self.query_transformer = QueryTransformer(llm=self.llm)
 
-        # Cache LRU
+        # Découverte automatique du schéma des sources + classifieur d'intent
+        self.schema = SchemaDiscovery(config.docs_dir).scan()
+        self.intent_router = IntentRouter(llm=self.llm, schema=self.schema)
+
+        # Cache LRU pour le retrieval
         self._retrieval_cache: Dict[tuple, List[Dict]] = {}
         self._cache_max_size: int = 128
-
-        # Formations en mémoire pour bypass LLM
-        self._formations_obligatoires, self._formations_facultatives = \
-            self._load_formations_from_excel(config.docs_dir)
 
         logger.info("=" * 50)
         logger.info("Pipeline prêt.")
@@ -119,265 +92,11 @@ class RAGPipeline:
     @staticmethod
     def _normalize_stem(fname: str) -> str:
         """SERVICE (1).xlsx → SERVICE"""
-        import re as _re
         stem = fname.rsplit(".", 1)[0] if "." in fname else fname
         stem = stem.upper().strip()
-        stem = _re.sub(r"\s*\(\d+\)\s*$", "", stem)
-        stem = _re.sub(r"\s*_\d+\s*$", "", stem)
+        stem = re.sub(r"\s*\(\d+\)\s*$", "", stem)
+        stem = re.sub(r"\s*_\d+\s*$", "", stem)
         return stem.strip()
-
-    @staticmethod
-    def _load_formations_from_excel(docs_dir: str):
-        """
-        Lit KAM_Formations_GTP.xlsx directement depuis le dossier documents.
-        Retourne (obligatoires: list[str], facultatives: list[str]).
-        Nécessaire car load_excel_as_documents ne gère pas ce fichier correctement
-        (le header réel N°/Intitulé/Statut est en ligne 4, pas en ligne 1).
-        """
-        import glob, openpyxl
-        patterns = ["*FORMATION*GTP*.xlsx","*KAM*FORMATION*.xlsx",
-                    "*formation*gtp*.xlsx","*GTP*.xlsx"]
-        found = []
-        for pat in patterns:
-            found.extend(glob.glob(f"{docs_dir}/**/{pat}", recursive=True))
-            found.extend(glob.glob(f"{docs_dir}/{pat}"))
-        if not found:
-            return [], []
-        path = found[0]
-        try:
-            wb = openpyxl.load_workbook(path, data_only=True)
-            ws = wb.active
-            obligatoires, facultatives, current_statut = [], [], None
-            for row in ws.iter_rows(values_only=True):
-                c0 = str(row[0]).strip() if row[0] else ""
-                c1 = str(row[1]).strip() if len(row)>1 and row[1] else ""
-                c2 = str(row[2]).strip() if len(row)>2 and row[2] else ""
-                joined = (c0+c1+c2).upper()
-                if "OBLIGATOIRE" in joined and not c0.isdigit():
-                    current_statut = "Obligatoire"; continue
-                if "FACULTATIV" in joined and not c0.isdigit():
-                    current_statut = "Facultative"; continue
-                if not c0.isdigit(): continue
-                statut = c2 if c2 else current_statut or "Inconnue"
-                if "obligatoire" in statut.lower():
-                    obligatoires.append(c1.strip())
-                else:
-                    facultatives.append(c1.strip())
-            wb.close()
-            logger.info("  ✓ %d formations chargées (%d oblig. / %d facult.)",
-                        len(obligatoires)+len(facultatives), len(obligatoires), len(facultatives))
-            return obligatoires, facultatives
-        except Exception as e:
-            logger.warning("  ⚠ Formations non chargées: %s", e)
-            return [], []
-
-    @staticmethod
-    def _is_list_question(question: str) -> bool:
-        """Détecte si la question demande une liste exhaustive.
-        Les questions avec des mots-clés de détail (ex: 'détails pour la formation X')
-        sont des requêtes ciblées et ne doivent PAS déclencher le mode exhaustif."""
-        q = RAGPipeline._normalize_accents(question.lower())
-        # Si la question demande un détail/explication → jamais exhaustif
-        if any(RAGPipeline._normalize_accents(kw) in q for kw in _LIST_OVERRIDE_KEYWORDS):
-            return False
-        norm_kws = [RAGPipeline._normalize_accents(kw) for kw in _LIST_KEYWORDS]
-        return any(kw in q for kw in norm_kws)
-
-    # ── SOURCE-KEYWORD MAPPING ──────────────────────────────────────────────
-    # Mapping entre mots-clés dans la question et fichiers sources pertinents.
-    # Permet de filtrer les chunks non pertinents (ex: POSTE.xlsx quand on
-    # demande des "directeurs" → DIRECTION.xlsx est plus pertinent).
-    _SOURCE_KEYWORDS = {
-        "DIRECTION": ["directeur", "directeurs", "directrice", "directrices", "direction", "directions"],
-        "DEPARTEMENT": ["departement", "departements", "département", "départements", "chef de departement", "chefs de departement"],
-        "SERVICE": ["service", "services", "chef de service", "chefs de service"],
-        # Questions sur le contenu d'une formation → Explications_F.docx
-        "EXPLICATIONS_F": [
-            "détail", "détails", "detail", "details",
-            "explique", "explication", "explications",
-            "décris", "description", "présente",
-            "en quoi consiste", "que couvre", "que comprend",
-            "parle moi de", "qu'est-ce que",
-        ],
-    }
-    # Mots-clés qui excluent POSTE.xlsx (données organisationnelles vs fiches de poste)
-    # "chantier" est une colonne dans DIRECTION/DEPARTEMENT/SERVICE, pas dans POSTE
-    _EXCLUDE_POSTE_KEYWORDS = [
-        "chantier", "chantiers", "affectation", "affectations",
-        "matricule", "matricules", "nom", "prenom", "prénom",
-        "observation", "fonction",
-        # Questions sur une personne → DEPARTEMENT/SERVICE, pas POSTE
-        "qui est le chef", "qui est la chef", "qui est le directeur",
-        "qui est le responsable", "chef de departement", "chef de département",
-        "chef de service", "directeur de", "responsable de",
-    ]
-
-    @staticmethod
-    def _normalize_accents(text: str) -> str:
-        """Normalise les accents français pour un matching robuste."""
-        for src, dst in [("é","e"),("è","e"),("ê","e"),("ë","e"),
-                         ("à","a"),("â","a"),("ä","a"),
-                         ("î","i"),("ï","i"),
-                         ("ô","o"),("ö","o"),
-                         ("ù","u"),("û","u"),("ü","u"),
-                         ("ç","c"),("œ","oe"),("æ","ae")]:
-            text = text.replace(src, dst)
-        return text
-
-    @staticmethod
-    def _detect_relevant_sources(question: str) -> set:
-        """Détecte les sources pertinentes à partir des mots-clés de la question."""
-        q = RAGPipeline._normalize_accents(question.lower())
-        relevant = set()
-        for source, keywords in RAGPipeline._SOURCE_KEYWORDS.items():
-            norm_kws = [RAGPipeline._normalize_accents(kw) for kw in keywords]
-            if any(kw in q for kw in norm_kws):
-                relevant.add(source)
-        return relevant
-
-    @staticmethod
-    def _should_exclude_poste(question: str) -> bool:
-        """Détecte si la question porte sur des données organisationnelles
-        (colonnes de DIRECTION/DEPARTEMENT/SERVICE) qui n'existent pas dans POSTE."""
-        q = RAGPipeline._normalize_accents(question.lower())
-        exclude_kws = [RAGPipeline._normalize_accents(kw) for kw in RAGPipeline._EXCLUDE_POSTE_KEYWORDS]
-        return any(kw in q for kw in exclude_kws)
-
-    @staticmethod
-    def _filter_by_source(chunks: list, relevant_sources: set, exclude_poste: bool = False) -> list:
-        """Filtre les chunks pour privilégier les sources pertinentes.
-        Si des sources pertinentes sont détectées, garde uniquement les chunks
-        provenant de ces sources + un petit nombre de chunks d'autres sources."""
-
-        filtered = chunks
-
-        # Exclure POSTE.xlsx si la question porte sur des données organisationnelles
-        if exclude_poste and not relevant_sources:
-            filtered = [c for c in filtered
-                        if c["metadata"].get("filename", "").upper().rsplit(".", 1)[0] != "POSTE"]
-            if filtered:
-                logger.info("  → Exclusion POSTE: %d/%d chunks retenus", len(filtered), len(chunks))
-                return filtered
-            return chunks  # Fallback si tout filtré
-
-        if not relevant_sources:
-            return chunks  # Pas de filtre si aucune source détectée
-
-        from_relevant = []
-        from_other = []
-        for chunk in filtered:
-            fname = chunk["metadata"].get("filename", "")
-            source_stem = RAGPipeline._normalize_stem(fname)
-            if source_stem in relevant_sources:
-                from_relevant.append(chunk)
-            else:
-                from_other.append(chunk)
-
-        if not from_relevant:
-            return chunks  # Aucun chunk de la source pertinente → ne pas filtrer
-
-        # Garder tous les chunks pertinents + max 3 chunks d'autres sources (contexte)
-        result = from_relevant + from_other[:3]
-        logger.info("  → Filtre source: %d/%d chunks retenus (sources: %s)",
-                     len(result), len(chunks), ", ".join(relevant_sources))
-        return result
-
-    # ── EXTRACTION DIRECTE (bypass retrieval pour listes exhaustives) ──────
-    # Patterns question → colonne à extraire
-    _DIRECT_EXTRACT_PATTERNS = [
-        # (mots-clés question, colonne à extraire, sources à scanner)
-        # colonne=None         → retourner toute la ligne
-        # colonne="CHANTIER"   → extraire les valeurs de la colonne CHANTIER
-        # colonne="FORMATION_ALL"    → lire Excel formations (toutes)
-        # colonne="FORMATION_OBLIG"  → lire Excel formations obligatoires uniquement
-        # colonne="FORMATION_FACULT" → lire Excel formations facultatives uniquement
-        # ⚠ Ordre important : patterns spécifiques AVANT les génériques
-        (["chef de departement", "chefs de departement",
-          "chef de département", "chefs de département"],         None,               ["DEPARTEMENT"]),
-        (["chef de service", "chefs de service"],                  None,               ["SERVICE"]),
-        (["directeur", "directeurs", "directrice"],                None,               ["DIRECTION"]),
-        (["chantier", "chantiers"],                                "CHANTIER",         ["DIRECTION", "DEPARTEMENT", "SERVICE"]),
-        (["service"],                                              "CHANTIER",         ["SERVICE"]),
-        (["departement", "département"],                           "CHANTIER",         ["DEPARTEMENT"]),
-        (["direction"],                                            "CHANTIER",         ["DIRECTION"]),
-        # Formations — lu directement depuis Excel (loader ne gère pas ce format)
-        (["formations obligatoires", "formations obligatoire",
-          "formation obligatoire", "obligatoires", "obligatoire"], "FORMATION_OBLIG",  ["KAM_FORMATIONS_GTP"]),
-        (["formations facultatives", "formations facultative",
-          "formation facultative", "facultatif", "facultatifs",
-          "facultatives", "facultative"],                          "FORMATION_FACULT", ["KAM_FORMATIONS_GTP"]),
-        (["formations disponibles", "formations disponible",
-          "quelles sont les formations", "liste des formations",
-          "toutes les formations", "plan de formation",
-          "formations existantes"],                                "FORMATION_ALL",    ["KAM_FORMATIONS_GTP"]),
-    ]
-
-    def _try_direct_extract(self, question: str) -> Optional[List[Dict]]:
-        """Pour les questions de type liste, extrait directement sans passer par le retriever.
-        Gère 4 types de colonnes :
-          None              → toute la ligne (chefs, directeurs)
-          "CHANTIER"        → valeur de la colonne CHANTIER (noms services/depts/dirs)
-          "FORMATION_ALL"   → toutes les formations depuis Excel
-          "FORMATION_OBLIG" → formations obligatoires depuis Excel
-          "FORMATION_FACULT"→ formations facultatives depuis Excel
-        """
-        q = question.lower()
-        # Normaliser les accents pour le matching
-        for src, dst in [("é","e"),("è","e"),("ê","e"),("à","a"),
-                         ("â","a"),("î","i"),("ô","o"),("ù","u"),("û","u")]:
-            q = q.replace(src, dst)
-
-        for keywords, column, sources in self._DIRECT_EXTRACT_PATTERNS:
-            if not any(kw in q for kw in keywords):
-                continue
-
-            # ── Cas spécial : formations lues depuis Excel ─────────────────
-            if column in ("FORMATION_ALL", "FORMATION_OBLIG", "FORMATION_FACULT"):
-                if column == "FORMATION_OBLIG":
-                    items = [(f, "Obligatoire") for f in self._formations_obligatoires]
-                elif column == "FORMATION_FACULT":
-                    items = [(f, "Facultative") for f in self._formations_facultatives]
-                else:  # FORMATION_ALL
-                    items = ([(f, "Obligatoire") for f in self._formations_obligatoires]
-                           + [(f, "Facultative") for f in self._formations_facultatives])
-                if not items:
-                    logger.warning("  ⚠ Formations vides — vérifiez KAM_Formations_GTP.xlsx")
-                    continue
-                results = [{"content": f"{intitule} ({statut})",
-                            "metadata": {"filename": "KAM_Formations_GTP.xlsx"}}
-                           for intitule, statut in items]
-                logger.info("  ⟹ Extraction directe: %d formations (colonne=%s)",
-                            len(results), column)
-                return results
-
-            # ── Cas général : scanner les documents BM25 ──────────────────
-            results = []
-            seen_values = set()
-            for doc in self.bm25.documents:
-                fname       = doc.metadata.get("filename", "")
-                source_stem = self._normalize_stem(fname)
-                if source_stem not in sources:
-                    continue
-
-                if column:
-                    for part in doc.content.split("|"):
-                        part = part.strip()
-                        if ":" in part:
-                            key, val = part.split(":", 1)
-                            key = key.strip().lstrip("[").rstrip("]").strip()
-                            val = val.strip()
-                            if key.upper() == column and val and val.lower() not in seen_values:
-                                seen_values.add(val.lower())
-                                results.append({"content": val, "metadata": doc.metadata})
-                else:
-                    results.append({"content": doc.content, "metadata": doc.metadata})
-
-            if results:
-                logger.info("  ⟹ Extraction directe: %d résultats (colonne=%s, sources=%s)",
-                            len(results), column or "ALL", ",".join(sources))
-                return results
-
-        return None
 
     # ── DÉDUPLICATION ────────────────────────────────────────────────────────
 
@@ -395,6 +114,117 @@ class RAGPipeline:
         if removed > 0:
             logger.info("  → %d chunk(s) dupliqué(s) supprimé(s)", removed)
         return unique
+
+    # ── FILTRAGE PAR SOURCE ──────────────────────────────────────────────────
+
+    def _filter_by_source(self, chunks: list, source: Optional[str]) -> list:
+        """Privilégie les chunks issus de la source détectée par l'IntentRouter.
+        Garde tous les chunks de la source + max 3 chunks d'autres sources."""
+        if not source:
+            return chunks
+        from_relevant, from_other = [], []
+        for chunk in chunks:
+            fname = chunk["metadata"].get("filename", "")
+            if self._normalize_stem(fname) == source:
+                from_relevant.append(chunk)
+            else:
+                from_other.append(chunk)
+        if not from_relevant:
+            return chunks  # aucune correspondance → ne pas filtrer
+        result = from_relevant + from_other[:3]
+        logger.info("  → Filtre source: %d/%d chunks retenus (source: %s)",
+                    len(result), len(chunks), source)
+        return result
+
+    # ── EXTRACTION DIRECTE GÉNÉRIQUE (bypass LLM pour listes) ───────────────
+
+    def _generic_direct_extract(self, intent_data: dict) -> Optional[List[Dict]]:
+        """Extrait directement les valeurs de la source/colonne identifiée par
+        l'IntentRouter, en scannant les documents BM25. Bypass complet du LLM.
+
+        - source obligatoire ; si introuvable dans le schéma → None
+        - column=None       → retourne la ligne entière
+        - column="X"        → extrait les valeurs de la colonne X
+        - filter={"K":"V"}  → ne garde que les lignes dont la colonne K vaut V
+        """
+        source = intent_data.get("source")
+        column = intent_data.get("column")
+        filt = intent_data.get("filter") or {}
+
+        if not source or source not in self.schema:
+            return None
+        if self.schema[source].get("is_doc"):
+            return None  # documents texte → pipeline LLM classique
+
+        results: List[Dict] = []
+        seen_values: set = set()
+
+        for doc in self.bm25.documents:
+            fname = doc.metadata.get("filename", "")
+            if self._normalize_stem(fname) != source:
+                continue
+
+            # parse "[SOURCE] K1: V1 | K2: V2 | ..." en dict
+            kv = self._parse_kv_chunk(doc.content)
+            if not kv:
+                continue
+
+            # filtre sur valeur (insensible à la casse ET aux accents)
+            if filt:
+                ok = True
+                for fkey, fval in filt.items():
+                    actual = kv.get(fkey.upper())
+                    if not actual:
+                        ok = False
+                        break
+                    if self._fold(str(fval)) not in self._fold(actual):
+                        ok = False
+                        break
+                if not ok:
+                    continue
+
+            if column:
+                val = kv.get(column.upper())
+                if val and val.lower() not in seen_values:
+                    seen_values.add(val.lower())
+                    results.append({"content": val, "metadata": doc.metadata})
+            else:
+                results.append({"content": doc.content, "metadata": doc.metadata})
+
+        if results:
+            logger.info("  ⟹ Extraction directe: %d résultats (source=%s, column=%s, filter=%s)",
+                        len(results), source, column or "ALL", filt or "-")
+            return results
+        return None
+
+    @staticmethod
+    def _fold(text: str) -> str:
+        """Normalise pour comparaison : minuscules + suppression d'accents."""
+        text = text.lower()
+        for src, dst in [("é","e"),("è","e"),("ê","e"),("ë","e"),
+                         ("à","a"),("â","a"),("ä","a"),
+                         ("î","i"),("ï","i"),("ô","o"),("ö","o"),
+                         ("ù","u"),("û","u"),("ü","u"),("ç","c"),
+                         ("œ","oe"),("æ","ae")]:
+            text = text.replace(src, dst)
+        return text
+
+    @staticmethod
+    def _parse_kv_chunk(content: str) -> Dict[str, str]:
+        """Parse un chunk au format '[SOURCE] K1: V1 | K2: V2' en dict {K1_UPPER: V1}."""
+        # retire le préfixe [SOURCE]
+        body = re.sub(r"^\s*\[[^\]]+\]\s*", "", content)
+        kv: Dict[str, str] = {}
+        for part in body.split("|"):
+            part = part.strip()
+            if ":" not in part:
+                continue
+            key, val = part.split(":", 1)
+            key = key.strip().lstrip("[").rstrip("]").strip().upper()
+            val = val.strip()
+            if key and val:
+                kv[key] = val
+        return kv
 
     # ── INGESTION ────────────────────────────────────────────────────────────
 
@@ -518,29 +348,29 @@ class RAGPipeline:
         """Interroge le RAG et retourne la réponse avec ses sources."""
         start = time.time()
 
-        # Détection automatique : question de type "liste exhaustive" ?
-        exhaustive = self._is_list_question(question)
-        if exhaustive:
-            logger.info("  ⟹ Mode exhaustif détecté (question de type liste)")
+        # 1. Classification d'intent (1 appel LLM léger, mis en cache)
+        intent_data = self.intent_router.classify(question)
+        exhaustive = intent_data["exhaustive"]
+        source = intent_data["source"]
+        column = intent_data["column"]
 
-        # ── Extraction directe (bypass retrieval pour les listes) ───────
-        if exhaustive:
-            direct = self._try_direct_extract(question)
+        # 2. Bypass LLM : extraction directe pour les listes ciblées
+        if exhaustive and source:
+            direct = self._generic_direct_extract(intent_data)
             if direct:
-                # ✅ BYPASS COMPLET DU LLM — formatage Python direct
                 seen: set = set()
                 unique_items = []
                 for d in direct:
                     item = d["content"].rstrip(".").strip()
-                    key  = item.lower()
+                    key = item.lower()
                     if key not in seen and len(item) > 2:
                         seen.add(key)
                         unique_items.append(item)
-                answer  = (f"Il y a {len(unique_items)} résultats :\n"
-                           + "\n".join(f"{i+1}. {item}"
-                                       for i, item in enumerate(unique_items)))
+                answer = (f"Il y a {len(unique_items)} résultats :\n"
+                          + "\n".join(f"{i+1}. {item}"
+                                      for i, item in enumerate(unique_items)))
                 elapsed = round(time.time() - start, 2)
-                sources = list({d["metadata"].get("filename","?") for d in direct})
+                sources = list({d["metadata"].get("filename", "?") for d in direct})
                 logger.info("  ✅ Réponse directe (sans LLM): %d éléments en %.2fs",
                             len(unique_items), elapsed)
                 return {
@@ -550,9 +380,10 @@ class RAGPipeline:
                     "sources":         sources,
                     "chunks_used":     len(unique_items),
                     "elapsed_seconds": elapsed,
+                    "intent":          intent_data,
                 }
 
-        # Étape 1 : Transformation de la requête (optionnelle)
+        # 3. Transformation de la requête (optionnelle)
         if use_query_transform:
             logger.info("  [1/4] Transformation de la requête...")
             search_query = self.query_transformer.rewrite(question)
@@ -561,13 +392,8 @@ class RAGPipeline:
         else:
             search_query = question
 
-        # Détection des sources pertinentes (fait ICI pour inclure dans le cache key)
-        relevant_sources = self._detect_relevant_sources(question)
-        exclude_poste    = self._should_exclude_poste(question)
-
-        # Étape 2+3 : Recherche hybride + Reranking (avec cache)
-        cache_key = (search_query.strip().lower(), exhaustive,
-                     frozenset(relevant_sources), exclude_poste)
+        # 4. Recherche hybride + Reranking (avec cache)
+        cache_key = (search_query.strip().lower(), exhaustive, source, column)
         if cache_key in self._retrieval_cache:
             logger.info("  [2/4] Recherche hybride... (cache hit)")
             logger.info("  [3/4] Reranking... (cache hit)")
@@ -576,7 +402,6 @@ class RAGPipeline:
             logger.info("  [2/4] Recherche hybride%s...", " (mode exhaustif)" if exhaustive else "")
             query_emb = self.embedder.embed_single(search_query)
             if exhaustive:
-                # Mode exhaustif : remonter beaucoup plus de candidats
                 k_dense = min(self.config.max_chunks_exhaustive * 5, self.vector_store.count())
                 k_sparse = self.config.max_chunks_exhaustive * 5
             else:
@@ -589,7 +414,6 @@ class RAGPipeline:
 
             logger.info("  [3/4] Reranking...")
             if exhaustive:
-                # Mode exhaustif : top-k élargi pour récupérer un max de résultats
                 reranked = self.reranker.rerank(
                     query=search_query,
                     documents=hybrid[:self.config.max_chunks_exhaustive * 3],
@@ -600,24 +424,22 @@ class RAGPipeline:
                                 reranked[0].get("rerank_score", 0),
                                 reranked[-1].get("rerank_score", 0))
             else:
-                # Mode classique : top-k fixe
                 reranked = self.reranker.rerank(
                     query=search_query,
                     documents=hybrid[:20],
                     top_k=self.config.top_k_after_rerank,
                 )
-            # Mise en cache (LRU simple)
             if len(self._retrieval_cache) >= self._cache_max_size:
                 oldest_key = next(iter(self._retrieval_cache))
                 del self._retrieval_cache[oldest_key]
             self._retrieval_cache[cache_key] = reranked
         logger.info("        → %d chunks retenus", len(reranked))
 
-        # Étape 3.5 : Filtre par source pertinente (évite la pollution POSTE.xlsx)
-        if relevant_sources or exclude_poste:
-            reranked = self._filter_by_source(reranked, relevant_sources, exclude_poste)
+        # 5. Filtre par source pertinente
+        if source:
+            reranked = self._filter_by_source(reranked, source)
 
-        # Étape 4 : Génération
+        # 6. Génération
         logger.info("  [4/4] Génération LLM...")
         context      = self._format_context(reranked)
         history_text = self._format_history(history) if history else ""
@@ -628,7 +450,6 @@ class RAGPipeline:
             history=history_text,
         )
 
-        # Adapter max_tokens : plus de tokens pour les listes exhaustives
         max_tokens = self.config.llm_max_tokens_long if exhaustive else self.config.llm_max_tokens
 
         if stream:
@@ -657,6 +478,7 @@ class RAGPipeline:
             "sources":         self._extract_sources(reranked),
             "chunks_used":     len(reranked),
             "elapsed_seconds": elapsed,
+            "intent":          intent_data,
         }
 
     # ── Helpers ──────────────────────────────────────────────────────────────
@@ -665,7 +487,6 @@ class RAGPipeline:
         if not history:
             return ""
         lines = []
-        # Garde seulement les 4 derniers échanges pour ne pas surcharger le contexte
         for msg in history[-4:]:
             role = "Utilisateur" if msg["role"] == "user" else "Assistant"
             lines.append(f"{role}: {msg['content']}")
@@ -675,7 +496,6 @@ class RAGPipeline:
         """Formate le contexte de façon compacte pour les petits modèles."""
         parts = []
         for i, chunk in enumerate(chunks, 1):
-            # Le contenu est déjà préfixé par [SOURCE] grâce au loader
             parts.append(chunk['content'])
         return "\n\n---\n\n".join(parts)
 

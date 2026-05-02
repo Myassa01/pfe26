@@ -20,6 +20,27 @@ def _load_excel(path: str) -> str:
     return "\n\n".join(d.content for d in docs)
 
 
+def _detect_header_row(ws, max_scan: int = 10) -> int:
+    """Détecte la ligne d'en-tête : 1ère ligne avec ≥2 cellules texte non-numériques.
+    Permet de gérer les Excel avec titre/métadonnées avant le tableau (ex: KAM_Formations_GTP)."""
+    for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=max_scan, values_only=True), 1):
+        text_cells = 0
+        for v in row:
+            if v is None:
+                continue
+            s = str(v).strip()
+            if len(s) < 2:
+                continue
+            try:
+                float(s.replace(",", "."))
+                continue  # numérique → pas un header
+            except ValueError:
+                text_cells += 1
+        if text_cells >= 2:
+            return row_idx
+    return 1
+
+
 def load_excel_as_documents(path: str) -> List[Document]:
     """Charge un fichier Excel et retourne UN Document par ligne.
     Chaque entrée est un texte autonome avec les noms de colonnes,
@@ -31,12 +52,13 @@ def load_excel_as_documents(path: str) -> List[Document]:
     docs = []
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
-        # Lire les headers
+        # Auto-détection de la ligne d'en-tête (gère les Excel avec titre/métadonnées avant)
+        header_row = _detect_header_row(ws)
         headers = []
-        for cell in ws[1]:
+        for cell in ws[header_row]:
             headers.append(str(cell.value).strip() if cell.value else "")
 
-        for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+        for row_idx, row in enumerate(ws.iter_rows(min_row=header_row + 1, values_only=True), header_row + 1):
             values = [str(v).strip() if v is not None else "" for v in row]
             if not any(values):
                 continue
