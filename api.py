@@ -35,6 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+import secrets
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -59,6 +60,53 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─── Authentification Bearer ──────────────────────────────────────────────
+#
+# Le token API est lu depuis la variable d'environnement API_BEARER_TOKEN.
+# S'il n'est pas défini au démarrage, on en génère un aléatoire et on l'affiche
+# dans les logs — l'opérateur doit le copier pour les requêtes suivantes.
+# Indispensable car ce serveur peut être exposé publiquement via ngrok.
+
+API_BEARER_TOKEN = os.environ.get("API_BEARER_TOKEN", "").strip()
+if not API_BEARER_TOKEN:
+    API_BEARER_TOKEN = secrets.token_urlsafe(32)
+    logger.warning("=" * 70)
+    logger.warning("API_BEARER_TOKEN non défini — token généré pour cette session :")
+    logger.warning("    %s", API_BEARER_TOKEN)
+    logger.warning("Utilisez ce token dans le header : Authorization: Bearer <token>")
+    logger.warning("Pour le persister, exportez API_BEARER_TOKEN avant de relancer.")
+    logger.warning("=" * 70)
+
+# Endpoints accessibles sans authentification (public).
+# /health permet aux outils de monitoring de vérifier que le serveur est up,
+# sans connaître le token. Tous les autres endpoints exigent un Bearer valide.
+_PUBLIC_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Vérifie le header Authorization: Bearer <token> sur tous les endpoints
+    sauf ceux explicitement publics. Bloque sinon avec 401."""
+    if request.url.path in _PUBLIC_PATHS or request.method == "OPTIONS":
+        return await call_next(request)
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authorization header manquant. "
+                               "Format attendu : 'Bearer <token>'."},
+        )
+    provided = auth[len("Bearer "):].strip()
+    # Comparaison à temps constant (évite les timing attacks)
+    if not secrets.compare_digest(provided, API_BEARER_TOKEN):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Token invalide."},
+        )
+    return await call_next(request)
 
 
 # ─── Rate Limiter simple en mémoire ───────────────────────────────────────

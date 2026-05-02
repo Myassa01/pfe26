@@ -25,7 +25,7 @@ class Config:
     collection_name: str = "rag_documents"
 
     # ── BM25 ────────────────────────────────────────────────────────────────
-    bm25_index_path: str = "./data/bm25_index.pkl"
+    bm25_index_path: str = "./data/bm25_index.json"
 
     # ── Chunking (en tokens, pas en caractères) ────────────────────────────
     # Taille mesurée via le tokenizer du modèle d'embedding.
@@ -43,7 +43,7 @@ class Config:
     # En mode exhaustif, on utilise un top-k élargi au lieu d'un seuil de score,
     # car les scores du cross-encoder mmarco sont souvent négatifs et
     # difficiles à calibrer avec un seuil fixe.
-    max_chunks_exhaustive: int = 30
+    max_chunks_exhaustive: int = 200
     # max_tokens élevé pour les réponses longues (listes, tableaux)
     llm_max_tokens_long: int = 1024
 

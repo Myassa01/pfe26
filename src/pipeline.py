@@ -23,6 +23,7 @@ from .reranking.reranker import CrossEncoderReranker
 from .generation.llm import HFClient
 from .generation.query_transform import QueryTransformer
 from .generation.intent_router import IntentRouter, SchemaDiscovery
+from .structured import StructuredQueryEngine
 
 # ── Prompts optimisés pour petit modèle (qwen2.5:0.5b) ──────────────────────
 
@@ -78,8 +79,14 @@ class RAGPipeline:
 
         self.query_transformer = QueryTransformer(llm=self.llm)
 
-        # Découverte automatique du schéma des sources + classifieur d'intent
-        self.schema = SchemaDiscovery(config.docs_dir).scan()
+        # Moteur de requêtage structuré (DuckDB) pour les fichiers Excel.
+        # Toute question dont l'intent cible un fichier tabulaire bypasse le RAG
+        # et passe par du SQL → 100% précis, déterministe, sans hallucination.
+        self.structured = StructuredQueryEngine(config.docs_dir)
+
+        # Découverte du schéma : on combine les tables structurées (DuckDB) +
+        # les documents non-structurés (.docx, .pdf) pour le router d'intent.
+        self.schema = self._build_combined_schema(config.docs_dir)
         self.intent_router = IntentRouter(llm=self.llm, schema=self.schema)
 
         # Cache LRU pour le retrieval
@@ -88,6 +95,38 @@ class RAGPipeline:
 
         logger.info("=" * 50)
         logger.info("Pipeline prêt.")
+
+    def _build_combined_schema(self, docs_dir: str) -> Dict[str, dict]:
+        """Combine le schéma structuré (DuckDB) avec les documents non-structurés.
+        Le résultat est passé à l'IntentRouter pour qu'il connaisse toutes les sources."""
+        schema: Dict[str, dict] = {}
+
+        # 1. Tables structurées : on enrichit avec des échantillons (utile pour le LLM)
+        for table_name, info in self.structured.schema().items():
+            schema[table_name] = {
+                "columns": info["columns"],
+                "samples": self.structured.samples(table_name),
+                "is_doc": False,
+                "filename": info["filename"],
+                "structured": True,
+            }
+
+        # 2. Documents non-structurés : on délègue à SchemaDiscovery (gère .docx/.pdf)
+        from pathlib import Path
+        from .generation.intent_router import SchemaDiscovery
+        doc_disc = SchemaDiscovery(docs_dir)
+        for file in sorted(Path(docs_dir).rglob("*")) if Path(docs_dir).exists() else []:
+            if not file.is_file():
+                continue
+            ext = file.suffix.lower()
+            if ext in doc_disc.DOC_EXTS and ext not in doc_disc.EXCEL_EXTS:
+                stem = doc_disc._normalize_stem(file.name)
+                if stem not in schema:
+                    schema[stem] = {
+                        "columns": [], "samples": {}, "is_doc": True,
+                        "filename": file.name, "structured": False,
+                    }
+        return schema
 
     @staticmethod
     def _normalize_stem(fname: str) -> str:
@@ -138,14 +177,10 @@ class RAGPipeline:
 
     # ── EXTRACTION DIRECTE GÉNÉRIQUE (bypass LLM pour listes) ───────────────
 
-    def _generic_direct_extract(self, intent_data: dict) -> Optional[List[Dict]]:
-        """Extrait directement les valeurs de la source/colonne identifiée par
-        l'IntentRouter, en scannant les documents BM25. Bypass complet du LLM.
-
-        - source obligatoire ; si introuvable dans le schéma → None
-        - column=None       → retourne la ligne entière
-        - column="X"        → extrait les valeurs de la colonne X
-        - filter={"K":"V"}  → ne garde que les lignes dont la colonne K vaut V
+    def _structured_query(self, intent_data: dict) -> Optional[List[Dict]]:
+        """Route une question vers DuckDB si la source est tabulaire.
+        Retourne None si la source est un document non-structuré (.docx/.pdf)
+        ou si elle n'existe pas → le pipeline RAG classique prend le relais.
         """
         source = intent_data.get("source")
         column = intent_data.get("column")
@@ -155,47 +190,13 @@ class RAGPipeline:
             return None
         if self.schema[source].get("is_doc"):
             return None  # documents texte → pipeline LLM classique
+        if not self.structured.has_table(source):
+            return None  # source dans le schéma mais pas dans DuckDB (cohérence)
 
-        results: List[Dict] = []
-        seen_values: set = set()
-
-        for doc in self.bm25.documents:
-            fname = doc.metadata.get("filename", "")
-            if self._normalize_stem(fname) != source:
-                continue
-
-            # parse "[SOURCE] K1: V1 | K2: V2 | ..." en dict
-            kv = self._parse_kv_chunk(doc.content)
-            if not kv:
-                continue
-
-            # filtre sur valeur (insensible à la casse ET aux accents)
-            if filt:
-                ok = True
-                for fkey, fval in filt.items():
-                    actual = kv.get(fkey.upper())
-                    if not actual:
-                        ok = False
-                        break
-                    if self._fold(str(fval)) not in self._fold(actual):
-                        ok = False
-                        break
-                if not ok:
-                    continue
-
-            if column:
-                val = kv.get(column.upper())
-                if val and val.lower() not in seen_values:
-                    seen_values.add(val.lower())
-                    results.append({"content": val, "metadata": doc.metadata})
-            else:
-                results.append({"content": doc.content, "metadata": doc.metadata})
-
-        if results:
-            logger.info("  ⟹ Extraction directe: %d résultats (source=%s, column=%s, filter=%s)",
-                        len(results), source, column or "ALL", filt or "-")
-            return results
-        return None
+        results = self.structured.list_values(
+            table=source, column=column, filters=filt, distinct=True,
+        )
+        return results if results else None
 
     @staticmethod
     def _fold(text: str) -> str:
@@ -208,23 +209,6 @@ class RAGPipeline:
                          ("œ","oe"),("æ","ae")]:
             text = text.replace(src, dst)
         return text
-
-    @staticmethod
-    def _parse_kv_chunk(content: str) -> Dict[str, str]:
-        """Parse un chunk au format '[SOURCE] K1: V1 | K2: V2' en dict {K1_UPPER: V1}."""
-        # retire le préfixe [SOURCE]
-        body = re.sub(r"^\s*\[[^\]]+\]\s*", "", content)
-        kv: Dict[str, str] = {}
-        for part in body.split("|"):
-            part = part.strip()
-            if ":" not in part:
-                continue
-            key, val = part.split(":", 1)
-            key = key.strip().lstrip("[").rstrip("]").strip().upper()
-            val = val.strip()
-            if key and val:
-                kv[key] = val
-        return kv
 
     # ── VALIDATION LLM PAR BATCHES (filtrage des résultats d'extraction) ────
 
@@ -445,9 +429,9 @@ class RAGPipeline:
         source = intent_data["source"]
         column = intent_data["column"]
 
-        # 2. Bypass LLM : extraction directe pour les listes ciblées
+        # 2. Bypass LLM : requête SQL directe pour les sources tabulaires
         if exhaustive and source:
-            direct = self._generic_direct_extract(intent_data)
+            direct = self._structured_query(intent_data)
             if direct:
                 # Dédup case-insensitive + accent-insensitive (fusionne SOCIALE/SOCIALES/SOCIOAL)
                 seen: set = set()

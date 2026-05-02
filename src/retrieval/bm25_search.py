@@ -1,10 +1,17 @@
-"""Recherche sparse BM25 (Okapi BM25) — optimisé français."""
+"""Recherche sparse BM25 (Okapi BM25) — optimisé français.
+
+Format de persistance : JSON (jamais pickle).
+    pickle.load() permet l'exécution arbitraire de code si l'index est altéré
+    par un attaquant. JSON est purement déclaratif — aucun code exécuté.
+    L'objet BM25Okapi est reconstruit à chaque load() à partir du tokenized_corpus
+    (rapide : ~ms pour quelques milliers de docs).
+"""
+import json
 import logging
 import os
-import pickle
 import re
 from typing import List, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
 
@@ -94,28 +101,57 @@ class BM25Search:
                 })
         return results
 
+    # ── Persistance JSON (pas de pickle : sécurité) ──────────────────────
+
+    _FORMAT_VERSION = 2  # bump à chaque changement de format
+
     def save(self, path: str) -> None:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            pickle.dump({
-                "documents":         self.documents,
-                "tokenized_corpus":  self._tokenized_corpus,
-                "bm25":              self.bm25,
-            }, f)
-        logger.info("Index BM25 sauvegardé: %s", path)
+        """Sauvegarde l'index au format JSON.
+        Ne sauve PAS l'objet BM25Okapi (ne se sérialise pas en JSON proprement) ;
+        il sera reconstruit à partir du tokenized_corpus au load()."""
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        payload = {
+            "format_version": self._FORMAT_VERSION,
+            "documents": [asdict(d) for d in self.documents],
+            "tokenized_corpus": self._tokenized_corpus,
+        }
+        # Écriture atomique : on écrit dans un .tmp puis on rename
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, path)
+        logger.info("Index BM25 sauvegardé (JSON): %s (%d docs)", path, len(self.documents))
 
     def load(self, path: str) -> bool:
+        """Charge l'index JSON et reconstruit BM25Okapi.
+        Refuse les anciens formats pickle (.pkl avec contenu binaire) — sécurité."""
         if not os.path.exists(path):
             return False
-        with open(path, "rb") as f:
-            data = pickle.load(f)
-        self.documents           = data["documents"]
-        self._tokenized_corpus   = data["tokenized_corpus"]
-        # Charge l'objet BM25 directement s'il existe, sinon reconstruit (rétrocompat)
-        if "bm25" in data and data["bm25"] is not None:
-            self.bm25 = data["bm25"]
-        else:
-            from rank_bm25 import BM25Okapi
-            self.bm25 = BM25Okapi(self._tokenized_corpus)
-        logger.info("Index BM25 chargé: %d documents", len(self.documents))
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            logger.warning(
+                "Index BM25 illisible (%s) — probablement un ancien format pickle. "
+                "Refus de chargement par sécurité. Supprimez %s puis relancez l'ingestion.",
+                e, path,
+            )
+            return False
+
+        if not isinstance(data, dict) or "documents" not in data or "tokenized_corpus" not in data:
+            logger.warning("Index BM25 corrompu (format inattendu) — ignoré: %s", path)
+            return False
+
+        version = data.get("format_version", 1)
+        if version != self._FORMAT_VERSION:
+            logger.warning("Index BM25 version %s ≠ %s attendue — réindexation requise.",
+                           version, self._FORMAT_VERSION)
+            return False
+
+        self.documents = [BM25Document(**d) for d in data["documents"]]
+        self._tokenized_corpus = data["tokenized_corpus"]
+        from rank_bm25 import BM25Okapi
+        self.bm25 = BM25Okapi(self._tokenized_corpus)
+        logger.info("Index BM25 chargé (JSON): %d documents", len(self.documents))
         return True

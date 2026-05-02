@@ -1,5 +1,6 @@
 pandas
 openpyxl
+duckdb
 fastapi
 uvicorn
 chromadb
@@ -9,3 +10,4 @@ pypdf
 python-docx
 beautifulsoup4
 pyngrok
+requests
