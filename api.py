@@ -1,412 +1,185 @@
 #!/usr/bin/env python3
-"""
-API REST FastAPI pour le RAG local.
-
-Démarrage:
-    python api.py
-    # ou
-    uvicorn api:app --host 0.0.0.0 --port 8000
-
-Endpoints:
-    GET  /health          → Statut du système
-    GET  /stats           → Statistiques d'indexation
-    POST /query           → Interroger le RAG
-    POST /ingest          → Déclencher l'ingestion
-    POST /upload          → Uploader un document
-    POST /reset           → Réinitialiser l'index
-    POST /lien            → Ajouter des URLs et scraper tous les liens
-    GET  /lien            → Lister les liens enregistrés
-    POST /lien/scrape     → Scraper tous les liens sans en ajouter
-"""
-import logging
-import sys
-import os
-import shutil
-import json
-import time
-from collections import defaultdict
-
+import sys, os, json, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger(__name__)
-
-import secrets
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, HttpUrl, Field, field_validator
+from pydantic import BaseModel
 from typing import List, Optional
 
 from config import config
+from auth import init_db, login, verify_token, revoke_token, create_user, list_users, update_user, delete_user
 from src.pipeline import RAGPipeline
 from src.ingestion.loader import scrape_url
 
-app = FastAPI(
-    title="RAG Local API",
-    description="Retrieval-Augmented Generation 100% local (HuggingFace + ChromaDB + sentence-transformers)",
-    version="1.0.0",
-)
+init_db()
 
-# CORS — restreint aux origines connues (ajouter les domaines autorisés)
-ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:8001").split(",")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="Assistant Sonatrach", version="3.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+pipeline = None
+ingestion_status = {"running": False, "last_result": None, "error": None}
+lien_status      = {"running": False, "last_result": None, "error": None}
+LINKS_FILE = "./data/links.json"
 
-# ─── Authentification Bearer ──────────────────────────────────────────────
-#
-# Le token API est lu depuis la variable d'environnement API_BEARER_TOKEN.
-# S'il n'est pas défini au démarrage, on en génère un aléatoire et on l'affiche
-# dans les logs — l'opérateur doit le copier pour les requêtes suivantes.
-# Indispensable car ce serveur peut être exposé publiquement via ngrok.
-
-API_BEARER_TOKEN = os.environ.get("API_BEARER_TOKEN", "").strip()
-if not API_BEARER_TOKEN:
-    API_BEARER_TOKEN = secrets.token_urlsafe(32)
-    logger.warning("=" * 70)
-    logger.warning("API_BEARER_TOKEN non défini — token généré pour cette session :")
-    logger.warning("    %s", API_BEARER_TOKEN)
-    logger.warning("Utilisez ce token dans le header : Authorization: Bearer <token>")
-    logger.warning("Pour le persister, exportez API_BEARER_TOKEN avant de relancer.")
-    logger.warning("=" * 70)
-
-# Endpoints accessibles sans authentification (public).
-# /health permet aux outils de monitoring de vérifier que le serveur est up,
-# sans connaître le token. Tous les autres endpoints exigent un Bearer valide.
-_PUBLIC_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
-
-
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    """Vérifie le header Authorization: Bearer <token> sur tous les endpoints
-    sauf ceux explicitement publics. Bloque sinon avec 401."""
-    if request.url.path in _PUBLIC_PATHS or request.method == "OPTIONS":
-        return await call_next(request)
-
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Authorization header manquant. "
-                               "Format attendu : 'Bearer <token>'."},
-        )
-    provided = auth[len("Bearer "):].strip()
-    # Comparaison à temps constant (évite les timing attacks)
-    if not secrets.compare_digest(provided, API_BEARER_TOKEN):
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Token invalide."},
-        )
-    return await call_next(request)
-
-
-# ─── Rate Limiter simple en mémoire ───────────────────────────────────────
-
-_rate_limit_store: dict = defaultdict(list)
-RATE_LIMIT_MAX_REQUESTS = int(os.environ.get("RATE_LIMIT_MAX", "30"))  # par minute
-RATE_LIMIT_WINDOW = 60  # secondes
-
-
-@app.middleware("http")
-async def rate_limit_middleware(request: Request, call_next):
-    """Rate limiter par IP — bloque au-delà de RATE_LIMIT_MAX requêtes/minute."""
-    client_ip = request.client.host if request.client else "unknown"
-    now = time.time()
-
-    # Nettoie les entrées expirées
-    _rate_limit_store[client_ip] = [
-        t for t in _rate_limit_store[client_ip] if now - t < RATE_LIMIT_WINDOW
-    ]
-
-    if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_MAX_REQUESTS:
-        return JSONResponse(
-            status_code=429,
-            content={"detail": "Trop de requêtes. Réessayez dans une minute."},
-        )
-
-    _rate_limit_store[client_ip].append(now)
-    return await call_next(request)
-
-pipeline: Optional[RAGPipeline] = None
-ingestion_status: dict = {"running": False, "last_result": None, "error": None}
-lien_status: dict = {"running": False, "last_result": None, "error": None}
-
-LINKS_STORE_PATH = os.path.join(".", "data", "links.json")
-
-
-def _load_links() -> List[str]:
-    if os.path.exists(LINKS_STORE_PATH):
-        with open(LINKS_STORE_PATH, encoding="utf-8") as f:
-            return json.load(f)
+def _load_links():
+    if os.path.exists(LINKS_FILE):
+        with open(LINKS_FILE) as f: return json.load(f)
     return []
 
-
-def _save_links(links: List[str]) -> None:
-    os.makedirs(os.path.dirname(LINKS_STORE_PATH), exist_ok=True)
-    with open(LINKS_STORE_PATH, "w", encoding="utf-8") as f:
-        json.dump(links, f, indent=2)
-
+def _save_links(links):
+    os.makedirs("./data", exist_ok=True)
+    with open(LINKS_FILE, "w") as f: json.dump(links, f, indent=2)
 
 @app.on_event("startup")
 async def startup():
     global pipeline
-    os.makedirs(config.data_dir, exist_ok=True)
+    os.makedirs("./data", exist_ok=True)
     os.makedirs(config.docs_dir, exist_ok=True)
     pipeline = RAGPipeline(config)
 
+def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Token manquant ou invalide")
+    user = verify_token(authorization.split(" ", 1)[1])
+    if not user: raise HTTPException(401, "Session expirée ou invalide")
+    return user
 
-# ─── Schemas ────────────────────────────────────────────────────────────────
+def require_superadmin(user: dict = Depends(get_current_user)) -> dict:
+    if user["role"] != "superadmin": raise HTTPException(403, "Accès réservé aux administrateurs")
+    return user
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class CreateUserRequest(BaseModel):
+    email: str; nom: str; prenom: str; role: str = "employee"; password: str
+
+class UpdateUserRequest(BaseModel):
+    nom: Optional[str] = None; prenom: Optional[str] = None
+    role: Optional[str] = None; password: Optional[str] = None; active: Optional[int] = None
+
+class QuestionRequest(BaseModel):
+    question: str; history: Optional[List[dict]] = []
 
 class LienRequest(BaseModel):
-    urls: List[HttpUrl]
+    urls: List[str]
 
+@app.post("/auth/login")
+def auth_login(req: LoginRequest):
+    result = login(req.email, req.password)
+    if not result: raise HTTPException(401, "Email ou mot de passe incorrect")
+    return result
 
-class ChatMessage(BaseModel):
-    role: str
-    content: str
+@app.post("/auth/logout")
+def auth_logout(authorization: Optional[str] = Header(None)):
+    if authorization and authorization.startswith("Bearer "):
+        revoke_token(authorization.split(" ", 1)[1])
+    return {"message": "Déconnecté"}
 
+@app.get("/auth/me")
+def auth_me(user: dict = Depends(get_current_user)):
+    return {k: user[k] for k in ("id","email","nom","prenom","role")}
 
-class QueryRequest(BaseModel):
-    question: str = Field(..., min_length=3, max_length=2000)
-    use_query_transform: bool = False
-    stream: bool = False
-    history: List[ChatMessage] = Field(default=[], max_length=20)
+@app.get("/users")
+def get_users(admin: dict = Depends(require_superadmin)): return list_users()
 
-    @field_validator("question")
-    @classmethod
-    def question_not_empty(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("La question ne peut pas être vide")
-        return v
+@app.post("/users")
+def add_user(req: CreateUserRequest, admin: dict = Depends(require_superadmin)):
+    try: return {"message": "Utilisateur créé", "user": create_user(req.email, req.nom, req.prenom, req.role, req.password)}
+    except ValueError as e: raise HTTPException(400, str(e))
 
+@app.put("/users/{user_id}")
+def edit_user(user_id: int, req: UpdateUserRequest, admin: dict = Depends(require_superadmin)):
+    update_user(user_id, **{k: v for k, v in req.dict().items() if v is not None})
+    return {"message": "Utilisateur mis à jour"}
 
-class QueryResponse(BaseModel):
-    question: str
-    search_query: str
-    answer: str
-    sources: List[str]
-    chunks_used: int
-    elapsed_seconds: float
-    # Classification de l'IntentRouter — utile pour debug côté frontend.
-    # Permet de voir si le bypass DuckDB s'est déclenché (intent.source non null)
-    # ou si le pipeline est tombé sur le RAG classique.
-    intent: Optional[dict] = None
-    # Warnings du moteur SQL (filtres ignorés, fallback tokenisé…).
-    # Permet à l'utilisateur de comprendre pourquoi un résultat est partiel.
-    warnings: List[str] = []
-
-
-# ─── Endpoints ──────────────────────────────────────────────────────────────
+@app.delete("/users/{user_id}")
+def remove_user(user_id: int, admin: dict = Depends(require_superadmin)):
+    delete_user(user_id); return {"message": "Utilisateur désactivé"}
 
 @app.get("/health")
-async def health():
-    return {
-        "status": "ok",
-        "chunks_indexed": pipeline.vector_store.count() if pipeline else 0,
-        "llm_model": config.llm_model,
-        "embedding_model": config.embedding_model,
-    }
-
+def health():
+    return {"status": "ok", "chunks_indexed": pipeline.vector_store.count() if pipeline else 0, "llm_model": config.llm_model}
 
 @app.get("/stats")
-async def stats():
-    if not pipeline:
-        raise HTTPException(503, "Pipeline non initialisé")
-    return {
-        "chunks_indexed": pipeline.vector_store.count(),
-        "embedding_model": config.embedding_model,
-        "embedding_device": config.embedding_device,
-        "llm_model": config.llm_model,
-        "reranker_model": config.reranker_model,
-        "chunk_size": config.chunk_size,
-        "chunk_overlap": config.chunk_overlap,
-        "top_k_dense": config.top_k_dense,
-        "top_k_sparse": config.top_k_sparse,
-        "top_k_after_rerank": config.top_k_after_rerank,
-        "docs_dir": config.docs_dir,
-        "ingestion_status": ingestion_status,
-    }
+def stats(user: dict = Depends(get_current_user)):
+    return {"chunks_indexed": pipeline.vector_store.count() if pipeline else 0,
+            "llm_model": config.llm_model, "embedding_model": config.embedding_model,
+            "reranker_model": config.reranker_model, "chunk_size": config.chunk_size,
+            "chunk_overlap": config.chunk_overlap, "top_k_dense": config.top_k_dense,
+            "top_k_sparse": config.top_k_sparse, "top_k_after_rerank": config.top_k_after_rerank,
+            "docs_dir": config.docs_dir, "ingestion_status": ingestion_status}
 
-
-@app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest):
-    if not pipeline:
-        raise HTTPException(503, "Pipeline non initialisé")
-    if pipeline.vector_store.count() == 0:
-        raise HTTPException(400, "Aucun document indexé. Appelez POST /ingest d'abord.")
+@app.post("/query")
+def query_endpoint(req: QuestionRequest, user: dict = Depends(get_current_user)):
+    if not req.question.strip(): raise HTTPException(400, "Question vide")
     try:
-        history = [{"role": m.role, "content": m.content} for m in request.history]
-        result = pipeline.query(
-            question=request.question,
-            use_query_transform=request.use_query_transform,
-            stream=False,
-            history=history if history else None,
-        )
+        result = pipeline.query(question=req.question, use_query_transform=False, stream=False, history=req.history or None)
+        result["source"] = "rag"
+        result.setdefault("search_query", req.question)
         return result
-    except Exception as e:
-        raise HTTPException(500, f"Erreur pipeline: {e}")
-
-
-@app.post("/ingest")
-async def ingest(background_tasks: BackgroundTasks, reset: bool = False):
-    """Déclenche l'ingestion en arrière-plan."""
-    if not pipeline:
-        raise HTTPException(503, "Pipeline non initialisé")
-    if ingestion_status["running"]:
-        raise HTTPException(409, "Ingestion déjà en cours")
-
-    def run_ingest():
-        ingestion_status["running"] = True
-        ingestion_status["error"] = None
-        try:
-            result = pipeline.ingest(reset=reset)
-            ingestion_status["last_result"] = result
-        except Exception as e:
-            ingestion_status["error"] = str(e)
-        finally:
-            ingestion_status["running"] = False
-
-    background_tasks.add_task(run_ingest)
-    return {
-        "message": f"Ingestion démarrée (reset={reset}) depuis '{config.docs_dir}'",
-        "hint": "GET /stats pour suivre la progression",
-    }
-
+    except Exception as e: raise HTTPException(500, str(e))
 
 @app.post("/upload")
-async def upload(file: UploadFile = File(...)):
-    """Upload un fichier dans le dossier documents."""
+def upload(file: UploadFile = File(...), admin: dict = Depends(require_superadmin)):
     os.makedirs(config.docs_dir, exist_ok=True)
     dest = os.path.join(config.docs_dir, file.filename)
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-    size = os.path.getsize(dest)
-    return {
-        "message": f"Fichier '{file.filename}' uploadé",
-        "path": dest,
-        "size_bytes": size,
-        "hint": "Appelez POST /ingest pour l'indexer",
-    }
+    with open(dest, "wb") as f: shutil.copyfileobj(file.file, f)
+    return {"message": f"Fichier '{file.filename}' uploadé", "hint": "Appelez POST /ingest pour l'indexer"}
 
-
-@app.post("/lien")
-async def add_liens(request: LienRequest, background_tasks: BackgroundTasks):
-    """Ajoute des URLs au store et scrape tous les liens enregistrés."""
-    if not pipeline:
-        raise HTTPException(503, "Pipeline non initialisé")
-    if lien_status["running"]:
-        raise HTTPException(409, "Scraping de liens déjà en cours")
-
-    # Ajout des nouvelles URLs au store persistant
-    existing = _load_links()
-    new_urls = [str(u) for u in request.urls]
-    added = [u for u in new_urls if u not in existing]
-    all_links = existing + added
-    _save_links(all_links)
-
-    def run_scrape():
-        lien_status["running"] = True
-        lien_status["error"] = None
-        links = _load_links()
-        docs = []
-        errors = []
-        for url in links:
-            try:
-                doc = scrape_url(url)
-                docs.append(doc)
-                print(f"  Scrappé: {url} ({len(doc.content):,} chars)")
-            except Exception as e:
-                errors.append({"url": url, "error": str(e)})
-                print(f"  Erreur scraping {url}: {e}")
-        try:
-            result = pipeline.ingest_documents(docs)
-            result["errors"] = errors
-            lien_status["last_result"] = result
-        except Exception as e:
-            lien_status["error"] = str(e)
-        finally:
-            lien_status["running"] = False
-
-    background_tasks.add_task(run_scrape)
-    return {
-        "message": f"{len(added)} lien(s) ajouté(s), scraping de {len(all_links)} lien(s) démarré",
-        "added": added,
-        "total_links": len(all_links),
-        "hint": "GET /stats pour suivre la progression",
-    }
-
-
-@app.get("/lien")
-async def list_liens():
-    """Liste tous les liens enregistrés."""
-    links = _load_links()
-    return {"links": links, "total": len(links), "status": lien_status}
-
-
-@app.post("/lien/scrape")
-async def scrape_liens(background_tasks: BackgroundTasks):
-    """Scrape et indexe tous les liens déjà enregistrés."""
-    if not pipeline:
-        raise HTTPException(503, "Pipeline non initialisé")
-    if lien_status["running"]:
-        raise HTTPException(409, "Scraping de liens déjà en cours")
-    links = _load_links()
-    if not links:
-        raise HTTPException(400, "Aucun lien enregistré. Appelez POST /lien d'abord.")
-
-    def run_scrape():
-        lien_status["running"] = True
-        lien_status["error"] = None
-        docs = []
-        errors = []
-        for url in links:
-            try:
-                doc = scrape_url(url)
-                docs.append(doc)
-                print(f"  Scrappé: {url} ({len(doc.content):,} chars)")
-            except Exception as e:
-                errors.append({"url": url, "error": str(e)})
-                print(f"  Erreur scraping {url}: {e}")
-        try:
-            result = pipeline.ingest_documents(docs)
-            result["errors"] = errors
-            lien_status["last_result"] = result
-        except Exception as e:
-            lien_status["error"] = str(e)
-        finally:
-            lien_status["running"] = False
-
-    background_tasks.add_task(run_scrape)
-    return {
-        "message": f"Scraping de {len(links)} lien(s) démarré",
-        "links": links,
-        "hint": "GET /lien pour suivre le statut",
-    }
-
+@app.post("/ingest")
+def ingest(background_tasks: BackgroundTasks, reset: bool = False, admin: dict = Depends(require_superadmin)):
+    if ingestion_status["running"]: raise HTTPException(409, "Ingestion déjà en cours")
+    def run():
+        ingestion_status["running"] = True; ingestion_status["error"] = None
+        try: ingestion_status["last_result"] = pipeline.ingest(reset=reset)
+        except Exception as e: ingestion_status["error"] = str(e)
+        finally: ingestion_status["running"] = False
+    background_tasks.add_task(run)
+    return {"message": f"Ingestion démarrée (reset={reset})"}
 
 @app.post("/reset")
-async def reset_index():
-    """Supprime et réinitialise l'index complet."""
-    if not pipeline:
-        raise HTTPException(503, "Pipeline non initialisé")
+def reset_index(admin: dict = Depends(require_superadmin)):
     pipeline.vector_store.reset()
-    bm25_path = config.bm25_index_path
-    if os.path.exists(bm25_path):
-        os.remove(bm25_path)
+    if os.path.exists(config.bm25_index_path): os.remove(config.bm25_index_path)
     ingestion_status["last_result"] = None
     return {"message": "Index réinitialisé"}
 
+@app.post("/lien")
+def add_liens(req: LienRequest, background_tasks: BackgroundTasks, admin: dict = Depends(require_superadmin)):
+    existing = _load_links(); added = [u for u in req.urls if u not in existing]; _save_links(existing + added)
+    def run():
+        lien_status["running"] = True; docs, errors = [], []
+        for url in _load_links():
+            try: docs.append(scrape_url(url))
+            except Exception as e: errors.append({"url": url, "error": str(e)})
+        try: r = pipeline.ingest_documents(docs); r["errors"] = errors; lien_status["last_result"] = r
+        except Exception as e: lien_status["error"] = str(e)
+        finally: lien_status["running"] = False
+    background_tasks.add_task(run)
+    return {"message": f"{len(added)} lien(s) ajouté(s)", "added": added}
+
+@app.get("/lien")
+def list_liens(user: dict = Depends(get_current_user)):
+    return {"links": _load_links(), "status": lien_status}
+
+@app.post("/lien/scrape")
+def scrape_liens(background_tasks: BackgroundTasks, admin: dict = Depends(require_superadmin)):
+    links = _load_links()
+    if not links: raise HTTPException(400, "Aucun lien enregistré")
+    def run():
+        lien_status["running"] = True; docs, errors = [], []
+        for url in links:
+            try: docs.append(scrape_url(url))
+            except Exception as e: errors.append({"url": url, "error": str(e)})
+        try: r = pipeline.ingest_documents(docs); r["errors"] = errors; lien_status["last_result"] = r
+        except Exception as e: lien_status["error"] = str(e)
+        finally: lien_status["running"] = False
+    background_tasks.add_task(run)
+    return {"message": f"Scraping de {len(links)} lien(s) démarré"}
+
 if __name__ == "__main__":
     import uvicorn
-    # Pour un tunnel ngrok, utiliser: python run_tunnel.py
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run("api:app", host="0.0.0.0", port=8001, reload=False)
