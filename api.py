@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from config import config
-from auth import init_db, login, verify_token, revoke_token, create_user, list_users, update_user, delete_user
+from auth import init_db, login, verify_token, revoke_token, create_user, list_users, update_user, delete_user ,save_history, get_history, delete_history 
 from src.pipeline import RAGPipeline
 from src.ingestion.loader import scrape_url
 
@@ -114,13 +114,46 @@ def stats(user: dict = Depends(get_current_user)):
 
 @app.post("/query")
 def query_endpoint(req: QuestionRequest, user: dict = Depends(get_current_user)):
-    if not req.question.strip(): raise HTTPException(400, "Question vide")
+    if not req.question.strip():
+        raise HTTPException(400, "Question vide")
     try:
-        result = pipeline.query(question=req.question, use_query_transform=False, stream=False, history=req.history or None)
+        result = pipeline.query(
+            question=req.question,
+            use_query_transform=False,
+            stream=False,
+            history=req.history or None,
+        )
         result["source"] = "rag"
         result.setdefault("search_query", req.question)
+
+        # ✅ Sauvegarde dans l'historique
+        save_history(
+            user_id=user["id"],
+            question=req.question,
+            answer=result["answer"],
+            source=result["source"],
+        )
         return result
-    except Exception as e: raise HTTPException(500, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ── Historique par utilisateur ────────────────────────────────────────────────
+@app.get("/historique")
+def get_my_history(user: dict = Depends(get_current_user)):
+    """Retourne l'historique de l'utilisateur connecté."""
+    return get_history(user["id"])
+
+@app.delete("/historique")
+def clear_my_history(user: dict = Depends(get_current_user)):
+    """Supprime l'historique de l'utilisateur connecté."""
+    delete_history(user["id"])
+    return {"message": "Historique supprimé"}
+
+@app.get("/historique/{user_id}")
+def get_user_history(user_id: int, admin: dict = Depends(require_superadmin)):
+    """Superadmin peut voir l'historique de n'importe quel utilisateur."""
+    return get_history(user_id)
 
 @app.post("/upload")
 def upload(file: UploadFile = File(...), admin: dict = Depends(require_superadmin)):
