@@ -42,14 +42,25 @@ def init_db():
             expires_at REAL    NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
+        CREATE TABLE IF NOT EXISTS historique (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            question   TEXT    NOT NULL,
+            answer     TEXT    NOT NULL,
+            source     TEXT    DEFAULT 'rag',
+            created_at TEXT    NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
         CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
         CREATE INDEX IF NOT EXISTS idx_users_email   ON users(email);
+        CREATE INDEX IF NOT EXISTS idx_hist_user     ON historique(user_id);
     """)
+
     count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     if count == 0:
         conn.execute(
             "INSERT INTO users (email,nom,prenom,role,password,created_at) VALUES (?,?,?,?,?,?)",
-            ("admin@sonatrach.dz","ADMIN","Super","superadmin",
+            ("admin@sonatrach.dz", "ADMIN", "Super", "superadmin",
              hash_password("Admin@1234"), datetime.now().isoformat())
         )
         conn.commit()
@@ -70,25 +81,29 @@ def create_token(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
     conn = get_conn()
     conn.execute("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))
-    conn.execute("INSERT INTO sessions VALUES (?,?,?)", (token, user_id, time.time()+TOKEN_TTL))
-    conn.commit(); conn.close()
+    conn.execute("INSERT INTO sessions VALUES (?,?,?)", (token, user_id, time.time() + TOKEN_TTL))
+    conn.commit()
+    conn.close()
     return token
 
 def verify_token(token: str) -> Optional[dict]:
-    if not token: return None
+    if not token:
+        return None
     conn = get_conn()
     row = conn.execute(
         "SELECT u.id,u.email,u.nom,u.prenom,u.role,u.active,s.expires_at "
         "FROM sessions s JOIN users u ON s.user_id=u.id WHERE s.token=?", (token,)
     ).fetchone()
     conn.close()
-    if not row or row["expires_at"] < time.time() or not row["active"]: return None
+    if not row or row["expires_at"] < time.time() or not row["active"]:
+        return None
     return dict(row)
 
 def revoke_token(token: str):
     conn = get_conn()
     conn.execute("DELETE FROM sessions WHERE token=?", (token,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
 
 def login(email: str, password: str) -> Optional[dict]:
     conn = get_conn()
@@ -96,23 +111,32 @@ def login(email: str, password: str) -> Optional[dict]:
         "SELECT * FROM users WHERE email=? AND active=1", (email.lower().strip(),)
     ).fetchone()
     conn.close()
-    if not user or not verify_password(password, user["password"]): return None
-    return {"token": create_token(user["id"]),
-            "user": {"id":user["id"],"email":user["email"],"nom":user["nom"],
-                     "prenom":user["prenom"],"role":user["role"]}}
+    if not user or not verify_password(password, user["password"]):
+        return None
+    return {
+        "token": create_token(user["id"]),
+        "user": {
+            "id":     user["id"],
+            "email":  user["email"],
+            "nom":    user["nom"],
+            "prenom": user["prenom"],
+            "role":   user["role"],
+        }
+    }
 
-def create_user(email,nom,prenom,role,password):
-    if role not in ROLES: raise ValueError(f"Rôle invalide: {ROLES}")
+def create_user(email, nom, prenom, role, password):
+    if role not in ROLES:
+        raise ValueError(f"Rôle invalide: {ROLES}")
     conn = get_conn()
     try:
         conn.execute(
             "INSERT INTO users (email,nom,prenom,role,password,created_at) VALUES (?,?,?,?,?,?)",
-            (email.lower().strip(),nom.upper().strip(),prenom.strip(),
-             role,hash_password(password),datetime.now().isoformat())
+            (email.lower().strip(), nom.upper().strip(), prenom.strip(),
+             role, hash_password(password), datetime.now().isoformat())
         )
         conn.commit()
         uid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        return {"id":uid,"email":email,"nom":nom,"prenom":prenom,"role":role}
+        return {"id": uid, "email": email, "nom": nom, "prenom": prenom, "role": role}
     except sqlite3.IntegrityError:
         raise ValueError(f"Email '{email}' déjà utilisé.")
     finally:
@@ -127,20 +151,51 @@ def list_users():
     return [dict(r) for r in rows]
 
 def update_user(user_id, **kwargs):
-    allowed = {"nom","prenom","role","active","password"}
-    updates = {k:v for k,v in kwargs.items() if k in allowed}
-    if "password" in updates: updates["password"] = hash_password(updates["password"])
-    if not updates: return False
+    allowed = {"nom", "prenom", "role", "active", "password"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed}
+    if "password" in updates:
+        updates["password"] = hash_password(updates["password"])
+    if not updates:
+        return False
     conn = get_conn()
     conn.execute(
         f"UPDATE users SET {','.join(f'{k}=?' for k in updates)} WHERE id=?",
-        list(updates.values())+[user_id]
+        list(updates.values()) + [user_id]
     )
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return True
 
 def delete_user(user_id):
     conn = get_conn()
     conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
     conn.execute("UPDATE users SET active=0 WHERE id=?", (user_id,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
+
+
+# ── Historique ────────────────────────────────────────────────────────────────
+def save_history(user_id: int, question: str, answer: str, source: str = "rag"):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO historique (user_id, question, answer, source, created_at) VALUES (?,?,?,?,?)",
+        (user_id, question, answer, source, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+def get_history(user_id: int, limit: int = 50) -> list:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, question, answer, source, created_at FROM historique "
+        "WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+        (user_id, limit)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def delete_history(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM historique WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
