@@ -7,7 +7,7 @@ try:
 except ImportError:
     _cuda = False
 
-# ── Variables globales (importées par api.py, auth.py) ────────────────────────
+# ── Variables globales ────────────────────────────────────────────────────────
 DB_PATH        = "./data/organisation.db"
 USERS_DB       = "./data/users.db"
 CHROMA_PATH    = "./data/chroma_db"
@@ -37,7 +37,7 @@ class Config:
     chroma_persist_dir:   str   = CHROMA_PATH
     collection_name:      str   = "rag_documents"
 
-    # ── BM25 — IMPORTANT : .pkl pas .json ────────────────────────────────────
+    # ── BM25 ──────────────────────────────────────────────────────────────────
     bm25_index_path:      str   = "./data/bm25_index.pkl"
 
     # ── Chunking ──────────────────────────────────────────────────────────────
@@ -54,12 +54,17 @@ class Config:
     max_chunks_exhaustive: int  = 200
 
     # ── Validation LLM ────────────────────────────────────────────────────────
-    validation_enabled:   bool  = False   # ← désactivé : trop lent sur petit modèle
+    validation_enabled:    bool = False   # désactivé : trop lent sur petit modèle
     validation_batch_size: int  = 10
 
     # ── Chemins ───────────────────────────────────────────────────────────────
     docs_dir:  str = DOCUMENTS_PATH
     data_dir:  str = "./data"
+
+    # ── Cache IntentRouter (persistant sur disque) ────────────────────────────
+    # Ce fichier survit aux redémarrages → évite les reclassifications aléatoires
+    # du LLM à froid qui causent les hallucinations après un push/restart.
+    intent_cache_path: str = "./data/intent_cache.json"
 
 
 config = Config()
