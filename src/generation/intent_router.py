@@ -1,9 +1,4 @@
-"""Routage intelligent des requêtes : découverte de schéma + classification LLM.
-
-Remplace les listes de mots-clés hard-codés du pipeline par :
-1. SchemaDiscovery : scan automatique des fichiers du dossier docs (colonnes, échantillons)
-2. IntentRouter   : appel LLM léger qui retourne {intent, source, column, exhaustive}
-"""
+"""Routage intelligent des requêtes : découverte de schéma + classification LLM."""
 import json
 import logging
 import re
@@ -20,29 +15,22 @@ logger = logging.getLogger(__name__)
 # ── SCHEMA DISCOVERY ─────────────────────────────────────────────────────────
 
 class SchemaDiscovery:
-    """Scanne le dossier de documents et extrait, pour chaque fichier :
-       - les colonnes (Excel) ou un flag is_doc=True (Word/PDF/etc.)
-       - quelques échantillons de valeurs par colonne (max 3, courts)
-    Le résultat sert à injecter le schéma dans le prompt du classifieur."""
-
     EXCEL_EXTS = {".xlsx", ".xls"}
-    DOC_EXTS = {".docx", ".doc", ".pdf", ".txt", ".md", ".html", ".htm"}
+    DOC_EXTS   = {".docx", ".doc", ".pdf", ".txt", ".md", ".html", ".htm"}
 
     def __init__(self, docs_dir: str, max_samples: int = 3, max_sample_len: int = 40):
-        self.docs_dir = docs_dir
-        self.max_samples = max_samples
+        self.docs_dir       = docs_dir
+        self.max_samples    = max_samples
         self.max_sample_len = max_sample_len
 
     def scan(self) -> Dict[str, dict]:
         schema: Dict[str, dict] = {}
         if not Path(self.docs_dir).exists():
-            logger.warning("SchemaDiscovery: docs_dir introuvable: %s", self.docs_dir)
             return schema
-
         for file in sorted(Path(self.docs_dir).rglob("*")):
             if not file.is_file():
                 continue
-            ext = file.suffix.lower()
+            ext  = file.suffix.lower()
             stem = self._normalize_stem(file.name)
             if ext in self.EXCEL_EXTS:
                 entry = self._scan_excel(file)
@@ -51,18 +39,14 @@ class SchemaDiscovery:
             elif ext in self.DOC_EXTS:
                 schema[stem] = {"columns": [], "samples": {}, "is_doc": True,
                                 "filename": file.name}
-
-        logger.info("SchemaDiscovery: %d sources détectées (%s)",
-                    len(schema), ", ".join(schema.keys()))
         return schema
 
     @staticmethod
     def _normalize_stem(fname: str) -> str:
-        """SERVICE (1).xlsx → SERVICE  ;  KAM_Formations_GTP.xlsx → KAM_FORMATIONS_GTP"""
         stem = fname.rsplit(".", 1)[0] if "." in fname else fname
         stem = stem.upper().strip()
         stem = re.sub(r"\s*\(\d+\)\s*$", "", stem)
-        stem = re.sub(r"\s*_\d+\s*$", "", stem)
+        stem = re.sub(r"\s*_\d+\s*$",    "", stem)
         return stem.strip()
 
     def _scan_excel(self, path: Path) -> Optional[dict]:
@@ -75,12 +59,11 @@ class SchemaDiscovery:
             for cell in ws[header_row]:
                 headers.append(str(cell.value).strip() if cell.value else "")
             headers = [h for h in headers if h]
-
             samples: Dict[str, List[str]] = {h: [] for h in headers}
             scanned = 0
             for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
                 scanned += 1
-                if scanned > 200:  # limite pour gros Excel
+                if scanned > 200:
                     break
                 for h, v in zip(headers, row):
                     if v is None or len(samples[h]) >= self.max_samples:
@@ -92,7 +75,7 @@ class SchemaDiscovery:
             return {
                 "columns": headers,
                 "samples": {h: samples[h] for h in headers if samples[h]},
-                "is_doc": False,
+                "is_doc":  False,
                 "filename": path.name,
             }
         except Exception as e:
@@ -109,76 +92,37 @@ _SYSTEM_PROMPT = (
 
 _PROMPT_TEMPLATE = """Classifie la question utilisateur en JSON selon le schéma ci-dessous.
 
-Sources disponibles (chaque ligne = 1 table, avec ses colonnes et des exemples de valeurs):
+Sources disponibles :
 {schema_block}
 
-Format JSON attendu (strict, une seule ligne):
+Format JSON (une seule ligne) :
 {{"intent":"list|detail|qa","source":"<NOM_SOURCE_OU_null>","column":"<NOM_COLONNE_OU_null>","exhaustive":true|false,"filter":null}}
 
-Règles:
-- "intent":"list" si la question demande une énumération ("liste", "tous", "donne-moi les", "quels sont").
-- "intent":"detail" si la question demande une explication ("explique", "détails").
-- "intent":"qa" pour toute question ciblée ("qui est X", "combien").
-- "source": EXACTEMENT un nom de table parmi la liste, ou null si vraiment aucune ne convient.
-- "column": UTILISE TOUJOURS la colonne marquée ⭐ COLONNE RECOMMANDÉE si elle existe dans le schéma. Elle contient les noms lisibles complets. N'utilise JAMAIS les colonnes SHORT_* (codes courts). Si aucune recommandation, choisis la colonne avec les valeurs les plus descriptives.
-- "exhaustive":true si intent="list", sinon false.
-- "filter": TRÈS IMPORTANT — si la question contient un qualificatif (ex: "obligatoire", "facultative", "d'un département X", "de type Y"), tu DOIS mettre ce critère dans filter avec le NOM DE COLONNE RÉEL de la table. JAMAIS un nom inventé. Si aucun critère, mettre null.
+Règles :
+- intent=list si la question demande une liste → exhaustive=true
+- intent=qa pour les questions ciblées
+- source: EXACTEMENT un nom de table ou null
+- column: colonne marquée ⭐ ou colonne avec valeurs lisibles. Jamais SHORT_*/ID/MATRICULE.
+- filter: {{"COLONNE":"valeur"}} si contrainte explicite, sinon null
 
-Exemples (basés sur le schéma ci-dessus):
-Q: "Donne-moi la liste des services"
-JSON: {{"intent":"list","source":"SERVICE","column":"CHANTIER","exhaustive":true,"filter":null}}
-
-Q: "Quels sont les services disponibles ?"
-JSON: {{"intent":"list","source":"SERVICE","column":"CHANTIER","exhaustive":true,"filter":null}}
-
-Q: "Quels sont les directions disponibles ?"
-JSON: {{"intent":"list","source":"DIRECTION","column":"CHANTIER","exhaustive":true,"filter":null}}
-
-Q: "Liste des directions"
-JSON: {{"intent":"list","source":"DIRECTION","column":"CHANTIER","exhaustive":true,"filter":null}}
-
-Q: "Quels sont les départements ?"
-JSON: {{"intent":"list","source":"DEPARTEMENT","column":"CHANTIER","exhaustive":true,"filter":null}}
-
-Q: "Liste des chefs de département"
-JSON: {{"intent":"list","source":"DEPARTEMENT","column":"CHANTIER","exhaustive":true,"filter":null}}
-
-Q: "Services de la direction DRH"
-JSON: {{"intent":"list","source":"SERVICE","column":"CHANTIER","exhaustive":true,"filter":{{"SHORT_LIBELLE_DIRECTION":"DRH"}}}}
-
-Q: "Postes dans l'activité électricité"
-JSON: {{"intent":"list","source":"POSTE","column":"CHANTIER","exhaustive":true,"filter":{{"LIBELLE_ACTIVITE":"électricité"}}}}
-
-Q: "Qui est le chef du département DRH ?"
-JSON: {{"intent":"qa","source":"DEPARTEMENT","column":null,"exhaustive":false,"filter":{{"SHORT_LIBELLE_DIRECTION":"DRH"}}}}
-
-Q: "Combien de directions ?"
-JSON: {{"intent":"list","source":"DIRECTION","column":"CHANTIER","exhaustive":true,"filter":null}}
-
-Q: "Quelles sont les formations obligatoires ?"
-JSON: {{"intent":"list","source":"KAM_FORMATIONS_GTP","column":"INTITULE_DE_LA_FORMATION","exhaustive":true,"filter":{{"STATUT":"Obligatoire"}}}}
-
-Q: "Liste des formations facultatives"
-JSON: {{"intent":"list","source":"KAM_FORMATIONS_GTP","column":"INTITULE_DE_LA_FORMATION","exhaustive":true,"filter":{{"STATUT":"Facultative"}}}}
-
-Q: "Toutes les formations"
-JSON: {{"intent":"list","source":"KAM_FORMATIONS_GTP","column":"INTITULE_DE_LA_FORMATION","exhaustive":true,"filter":null}}
+Exemples :
+{dynamic_examples}
 
 Question: {question}
 JSON:"""
 
 
 class IntentRouter:
-    """Classifie une question utilisateur via le LLM en s'appuyant sur le schéma découvert."""
-
     def __init__(self, llm: HFClient, schema: Dict[str, dict], cache_size: int = 256):
-        self.llm = llm
-        self.schema = schema
-        self.cache_size = cache_size
+        self.llm         = llm
+        self.schema      = schema
+        self.cache_size  = cache_size
         self._cache: "OrderedDict[str, dict]" = OrderedDict()
-        self._schema_block = self._build_schema_block(schema)
+        self._schema_block     = self._build_schema_block(schema)
+        self._dynamic_examples = self._build_dynamic_examples(schema)
 
-    # ── public ────────────────────────────────────────────────────────────
+    # ── Public ───────────────────────────────────────────────────────────────
+
     def classify(self, question: str) -> dict:
         key = self._normalize_question(question)
         if key in self._cache:
@@ -187,6 +131,7 @@ class IntentRouter:
 
         prompt = _PROMPT_TEMPLATE.format(
             schema_block=self._schema_block,
+            dynamic_examples=self._dynamic_examples,
             question=question.strip(),
         )
         try:
@@ -197,7 +142,7 @@ class IntentRouter:
                 max_tokens=120,
             )
         except Exception as e:
-            logger.warning("IntentRouter: appel LLM échoué (%s) — fallback qa", e)
+            logger.warning("IntentRouter: LLM échoué (%s) → fallback", e)
             return self._fallback()
 
         parsed = self._parse_json(raw)
@@ -211,50 +156,87 @@ class IntentRouter:
             self._cache.popitem(last=False)
         return result
 
-    # ── private ──────────────────────────────────────────────────────────
+    # ── Private ───────────────────────────────────────────────────────────────
+
     @staticmethod
     def _normalize_question(q: str) -> str:
         q = q.lower().strip()
         for src, dst in [("é","e"),("è","e"),("ê","e"),("ë","e"),
-                         ("à","a"),("â","a"),("ä","a"),
-                         ("î","i"),("ï","i"),("ô","o"),("ö","o"),
-                         ("ù","u"),("û","u"),("ü","u"),("ç","c")]:
+                         ("à","a"),("â","a"),("ä","a"),("î","i"),("ï","i"),
+                         ("ô","o"),("ö","o"),("ù","u"),("û","u"),("ü","u"),("ç","c")]:
             q = q.replace(src, dst)
         return re.sub(r"\s+", " ", q)
 
     def _build_schema_block(self, schema: Dict[str, dict]) -> str:
-        """Expose chaque source avec colonnes + 2-3 valeurs d'exemple par colonne.
-        Indique aussi la colonne recommandée (label_column) pour les listes."""
         if not schema:
             return "(aucune source disponible)"
         lines = []
         for name, info in schema.items():
             if info.get("is_doc"):
-                lines.append(f"* {name} (document texte) — descriptions, explications")
+                lines.append(f"* {name} (document texte)")
                 continue
-            cols       = info.get("columns", [])
-            samples    = info.get("samples", {})
-            row_count  = info.get("row_count", "?")
-            label_col  = info.get("label_column")  # colonne recommandée pour les listes
-
+            cols      = info.get("columns", [])
+            samples   = info.get("samples", {})
+            row_count = info.get("row_count", "?")
+            label_col = info.get("label_column")
             lines.append(f"* {name} ({row_count} lignes) :")
-            if label_col:
-                lines.append(f"    ⭐ COLONNE RECOMMANDÉE POUR LES LISTES : {label_col}")
-
             for col in cols:
+                star = " ⭐ COLONNE RECOMMANDÉE" if col == label_col else ""
                 vals = samples.get(col, [])
-                marker = " ⭐" if col == label_col else ""
                 if vals:
                     sample_str = ", ".join(f'"{v}"' for v in vals[:3])
-                    lines.append(f"    - {col}{marker} → ex: {sample_str}")
+                    lines.append(f"    - {col}{star} → ex: {sample_str}")
                 else:
-                    lines.append(f"    - {col}{marker}")
+                    lines.append(f"    - {col}{star}")
         return "\n".join(lines)
+
+    def _build_dynamic_examples(self, schema: Dict[str, dict]) -> str:
+        if not schema:
+            return "(aucun exemple)"
+        lines = []
+        for table_name, info in schema.items():
+            if info.get("is_doc"):
+                continue
+            label_col   = info.get("label_column")
+            columns     = info.get("columns", [])
+            samples     = info.get("samples", {})
+            display_col = label_col or self._pick_display_col(columns, samples)
+            if not display_col:
+                continue
+            table_label = table_name.replace("_", " ").lower()
+
+            lines.append(f'Q: "Liste des {table_label}"')
+            lines.append(
+                f'{{"intent":"list","source":"{table_name}",'
+                f'"column":"{display_col}","exhaustive":true,"filter":null}}'
+            )
+            lines.append("")
+
+            filter_col = self._pick_filter_col(columns, samples, exclude=display_col)
+            if filter_col:
+                sample_vals = samples.get(filter_col, [])
+                filter_val  = sample_vals[0] if sample_vals else "VALEUR"
+                lines.append(f'Q: "{table_label} filtrés par {filter_col}={filter_val}"')
+                lines.append(
+                    f'{{"intent":"list","source":"{table_name}",'
+                    f'"column":"{display_col}","exhaustive":true,'
+                    f'"filter":{{"{filter_col}":"{filter_val}"}}}}'
+                )
+                lines.append("")
+                lines.append(f'Q: "Qui est responsable de {filter_val} ?"')
+                lines.append(
+                    f'{{"intent":"qa","source":"{table_name}",'
+                    f'"column":null,"exhaustive":false,'
+                    f'"filter":{{"{filter_col}":"{filter_val}"}}}}'
+                )
+                lines.append("")
+        return "\n".join(lines) if lines else "(aucun exemple généré)"
+
+    # ── ✅ _parse_json est une méthode de IntentRouter ───────────────────────
 
     def _parse_json(self, raw: str) -> Optional[dict]:
         if not raw:
             return None
-        # 1. tenter d'isoler le 1er { ... } de la réponse
         match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
         candidate = match.group(0) if match else raw.strip()
         for attempt in (candidate, self._repair_json(candidate)):
@@ -266,7 +248,6 @@ class IntentRouter:
 
     @staticmethod
     def _repair_json(s: str) -> str:
-        # single → double quotes (basique), retire trailing commas
         s = re.sub(r"'", '"', s)
         s = re.sub(r",\s*([}\]])", r"\1", s)
         return s
@@ -277,15 +258,14 @@ class IntentRouter:
             intent = "qa"
 
         source = data.get("source")
-        if source in ("null", "None", ""):
+        if source in ("null", "None", "", None):
             source = None
         if source and source not in self.schema:
-            # tentative de match insensible à la casse / au stem
             up = str(source).upper()
             source = up if up in self.schema else None
 
         column = data.get("column")
-        if column in ("null", "None", ""):
+        if column in ("null", "None", "", None):
             column = None
         if column and source and not self.schema[source].get("is_doc"):
             cols_upper = {c.upper(): c for c in self.schema[source].get("columns", [])}
@@ -296,16 +276,16 @@ class IntentRouter:
         filt = data.get("filter")
         if not isinstance(filt, dict) or not filt:
             filt = None
-        elif source:  # normaliser les clés du filtre sur les colonnes connues
+        elif source:
             cols_upper = {c.upper(): c for c in self.schema[source].get("columns", [])}
             filt = {cols_upper.get(str(k).upper(), k): v for k, v in filt.items()}
 
         return {
-            "intent": intent,
-            "source": source,
-            "column": column,
+            "intent":     intent,
+            "source":     source,
+            "column":     column,
             "exhaustive": exhaustive,
-            "filter": filt,
+            "filter":     filt,
             "confidence": "high",
         }
 
@@ -315,3 +295,40 @@ class IntentRouter:
             "intent": "qa", "source": None, "column": None,
             "exhaustive": False, "filter": None, "confidence": "low",
         }
+
+    @staticmethod
+    def _pick_display_col(columns: List[str], samples: Dict[str, List[str]]) -> Optional[str]:
+        for prefix in ["LIBELLE_", "INTITULE_", "DESIGNATION_", "NOM_", "TITRE_"]:
+            for col in columns:
+                if col.upper().startswith(prefix) and not col.upper().startswith("SHORT_"):
+                    return col
+        best, best_len = None, 0
+        skip = {"ID", "AFFECTATION", "MATRICULE", "OBSERVATION", "AFFECT_PAR"}
+        for col in columns:
+            if col.upper() in skip or col.upper().startswith(("SHORT_", "ID_", "NUM_")):
+                continue
+            vals = samples.get(col, [])
+            avg  = sum(len(v) for v in vals) / len(vals) if vals else 0
+            if avg > best_len:
+                best, best_len = col, avg
+        return best
+
+    @staticmethod
+    def _pick_filter_col(columns: List[str], samples: Dict[str, List[str]],
+                         exclude: Optional[str]) -> Optional[str]:
+        candidates = []
+        for col in columns:
+            if col == exclude:
+                continue
+            cup = col.upper()
+            if any(cup.startswith(p) for p in ("SHORT_", "STATUT", "TYPE_", "CATEGORIE")):
+                candidates.insert(0, col)
+                continue
+            vals = samples.get(col, [])
+            if not vals:
+                continue
+            avg_len    = sum(len(v) for v in vals) / len(vals)
+            is_numeric = all(v.replace(".", "").replace(",", "").isdigit() for v in vals)
+            if 2 < avg_len < 20 and not is_numeric:
+                candidates.append(col)
+        return candidates[0] if candidates else None
