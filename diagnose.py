@@ -133,7 +133,7 @@ def check_intent_router(pipeline, questions):
 
 def check_structured_query(pipeline, questions):
     """Pour chaque question dont l'intent est exhaustif + table, exécute le SQL."""
-    section("3. EXÉCUTION SQL DIRECTE (StructuredQueryEngine)")
+    section("3a. EXÉCUTION SQL DIRECTE — listes exhaustives (StructuredQueryEngine)")
     for q in questions:
         intent = pipeline.intent_router.classify(q)
         if not (intent["exhaustive"] and intent["source"]
@@ -151,7 +151,6 @@ def check_structured_query(pipeline, questions):
                 distinct=True,
             )
             print(f"    → {len(results)} résultat(s)")
-            # Warnings du moteur SQL (filtres ignorés, fallback tokenisé…)
             for w in pipeline.structured.last_warnings:
                 print(f"    ⚠ {w}")
             for r in results[:5]:
@@ -160,6 +159,39 @@ def check_structured_query(pipeline, questions):
                 print(f"      ... ({len(results) - 5} autres)")
             if not results:
                 print("    ⚠ AUCUN résultat ! Le bypass va retomber sur le RAG.")
+        except Exception as e:
+            print(f"    ✗ ERREUR list_values() : {e}")
+
+    section("3b. EXÉCUTION SQL — QA structuré (intent=qa/detail + filtre)")
+    for q in questions:
+        intent = pipeline.intent_router.classify(q)
+        if not (not intent["exhaustive"]
+                and intent["source"]
+                and intent.get("filter")
+                and intent["source"] in pipeline.schema
+                and not pipeline.schema[intent["source"]].get("is_doc")):
+            continue
+        print(f"\n  Q : {q!r}")
+        print(f"    Intent : intent={intent['intent']} source={intent['source']} "
+              f"filter={intent.get('filter')}")
+        try:
+            results = pipeline.structured.list_values(
+                table=intent["source"],
+                column=None,          # toutes les colonnes pour QA
+                filters=intent.get("filter") or {},
+                distinct=False,
+            )
+            print(f"    → {len(results)} ligne(s) SQL retournée(s)")
+            for w in pipeline.structured.last_warnings:
+                print(f"    ⚠ {w}")
+            for r in results[:3]:
+                print(f"      • {r['content'][:150]}")
+            if len(results) > 3:
+                print(f"      ... ({len(results) - 3} autres)")
+            if results:
+                print("      ✓ Structured QA va s'activer (SQL → LLM focalisé)")
+            else:
+                print("      ⚠ 0 résultat SQL → fallback RAG classique")
         except Exception as e:
             print(f"    ✗ ERREUR list_values() : {e}")
 
@@ -188,13 +220,19 @@ def main():
     check_structured_query(pipeline, questions)
 
     section("RÉSUMÉ")
-    print("\n  Pour toute question listée ci-dessus avec '✓ Bypass DuckDB devrait se")
-    print("  déclencher' ET un nombre de résultats > 0, le pipeline doit répondre")
-    print("  en <1s sans hallucination.")
     print()
-    print("  Si la réponse réelle reste lente / hallucinée, c'est probablement que :")
-    print("    • L'IntentRouter classifie mal cette question (voir intent ci-dessus)")
-    print("    • Ou le bypass se déclenche mais retourne 0 résultats SQL")
+    print("  ── Bypass liste (exhaustif) ─────────────────────────────────────")
+    print("  Toute question en section 3a avec résultats > 0 répond en < 1s.")
+    print("  Si lente / hallucinée : vérifier l'intent en section 2 (✓ ou ⚠).")
+    print()
+    print("  ── Structured QA (ciblé) ────────────────────────────────────────")
+    print("  Section 3b : questions du type 'Qui est...' / 'Quel est...' sur")
+    print("  une table DuckDB avec un filtre. Le SQL retourne 1-N lignes qui")
+    print("  sont passées directement au LLM comme contexte focalisé → rapide")
+    print("  et précis (pas de retrieval vectoriel).")
+    print()
+    print("  ── Fallback RAG ─────────────────────────────────────────────────")
+    print("  Questions sans source DuckDB claire → pipeline vectoriel classique.")
     print()
 
 

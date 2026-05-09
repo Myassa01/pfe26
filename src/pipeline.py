@@ -486,6 +486,42 @@ class RAGPipeline:
                     "warnings":        sql_warnings,
                 }
 
+        # 2b. Structured QA : SQL lookup → LLM focalisé.
+        # Active quand intent=qa/detail avec une source tabulaire + au moins un filtre.
+        # On passe les lignes SQL au LLM au lieu de lancer un retrieval vectoriel sur
+        # tout le corpus → plus rapide, plus précis, aucune hallucination possible.
+        if (not exhaustive and source
+                and not self.schema.get(source, {}).get("is_doc")
+                and intent_data.get("filter")
+                and self.structured.has_table(source)):
+            qa_rows = self._structured_query(intent_data)
+            sql_warnings = list(self.structured.last_warnings)
+            if qa_rows:
+                context = "\n".join(r["content"] for r in qa_rows[:20])
+                history_text = self._format_history(history) if history else ""
+                prompt = _GENERATION_PROMPT.format(
+                    context=context, question=question, history=history_text,
+                )
+                answer = self.llm.generate(
+                    prompt=prompt,
+                    system=_SYSTEM_PROMPT,
+                    temperature=self.config.llm_temperature,
+                    max_tokens=self.config.llm_max_tokens,
+                )
+                elapsed = round(time.time() - start, 2)
+                logger.info("  ✅ Structured QA: %d ligne(s) SQL → LLM en %.2fs",
+                            len(qa_rows), elapsed)
+                return {
+                    "question":        question,
+                    "search_query":    question,
+                    "answer":          answer,
+                    "sources":         list({r["metadata"].get("filename","?") for r in qa_rows}),
+                    "chunks_used":     len(qa_rows),
+                    "elapsed_seconds": elapsed,
+                    "intent":          intent_data,
+                    "warnings":        sql_warnings,
+                }
+
         # 3. Transformation de la requête (optionnelle)
         if use_query_transform:
             logger.info("  [1/4] Transformation de la requête...")
