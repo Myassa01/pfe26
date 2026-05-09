@@ -27,80 +27,98 @@ from .structured import StructuredQueryEngine
 
 # ── Prompts optimisés pour petit modèle (qwen2.5:0.5b) ──────────────────────
 
-_SYSTEM_PROMPT = """Tu es un assistant RH. Réponds en français uniquement à partir du contexte fourni.
-Chaque entrée du contexte est préfixée par sa source entre crochets (ex: [DIRECTION], [DEPARTEMENT], [SERVICE], [POSTE]).
-Utilise UNIQUEMENT les données de la source pertinente à la question. Ignore les entrées provenant de sources non pertinentes.
-Si l'information n'est pas dans le contexte, réponds : "Aucune réponse ."
-N'invente JAMAIS de données. Cite uniquement ce qui apparaît explicitement dans le contexte."""
+_SYSTEM_PROMPT = """Tu es un assistant RH expert. Réponds en français uniquement à partir du contexte fourni.
+
+RÈGLES ABSOLUES :
+1. Lis TOUT le contexte avant de répondre.
+2. Identifie la source la plus pertinente selon la question posée.
+3. Si la question porte sur PLUSIEURS personnes ou demande une liste → liste TOUS les éléments trouvés, numérotés, sans en omettre
+4. Si plusieurs entrées semblent correspondre, choisis celle dont le libellé correspond EXACTEMENT à la question.
+5. Si l'information est absente du contexte, réponds uniquement : "Information non disponible."
+6. N'invente JAMAIS de données. Ne complète jamais par tes connaissances générales."""
+
 
 _GENERATION_PROMPT = """Contexte:
 {context}
 
 {history}Question: {question}
 
+Instructions:
+- Identifie l'entrée du contexte qui répond EXACTEMENT à la question.
+- Réponds en UNE phrase claire et directe.
+- Ne mentionne pas les sources, ne cite pas de codes ou identifiants techniques.
+- Si la question porte sur une personne , donne son nom complet uniquement.
+
 Réponse:"""
+
 
 _GENERATION_PROMPT_LIST = """Contexte:
 {context}
 
 {history}Question: {question}
 
-IMPORTANT: La question demande une liste. Tu dois citer TOUS les éléments présents dans le contexte, sans en omettre.
-Formatte la réponse sous forme de liste numérotée. Ne résume pas, ne regroupe pas, liste chaque élément.
+Instructions:
+- La question demande une liste exhaustive.
+- Cite TOUS les éléments présents dans le contexte qui correspondent à la question, sans en omettre aucun.
+- Format : liste numérotée, un élément par ligne.
+- Ne regroupe pas, ne résume pas, ne déduis pas — liste uniquement ce qui est explicitement dans le contexte.
+- Élimine les doublons exacts.
+
 
 Réponse:"""
 
 
+ 
 class RAGPipeline:
     def __init__(self, config):
         self.config = config
-
+ 
         logger.info("Initialisation du pipeline RAG local...")
         logger.info("=" * 50)
-
+ 
         self.embedder = Embedder(
             model_name=config.embedding_model,
             device=config.embedding_device,
         )
-
+ 
         self.vector_store = VectorStore(
             persist_dir=config.chroma_persist_dir,
             collection_name=config.collection_name,
         )
-
+ 
         self.bm25 = BM25Search()
         self.bm25.load(config.bm25_index_path)
-
+ 
         self.reranker = CrossEncoderReranker(model_name=config.reranker_model)
-
+ 
         self.llm = HFClient(
             model=config.llm_model,
         )
-
+ 
         self.query_transformer = QueryTransformer(llm=self.llm)
-
+ 
         # Moteur de requêtage structuré (DuckDB) pour les fichiers Excel.
         # Toute question dont l'intent cible un fichier tabulaire bypasse le RAG
         # et passe par du SQL → 100% précis, déterministe, sans hallucination.
         self.structured = StructuredQueryEngine(config.docs_dir)
-
+ 
         # Découverte du schéma : on combine les tables structurées (DuckDB) +
         # les documents non-structurés (.docx, .pdf) pour le router d'intent.
         self.schema = self._build_combined_schema(config.docs_dir)
         self.intent_router = IntentRouter(llm=self.llm, schema=self.schema)
-
+ 
         # Cache LRU pour le retrieval
         self._retrieval_cache: Dict[tuple, List[Dict]] = {}
         self._cache_max_size: int = 128
-
+ 
         logger.info("=" * 50)
         logger.info("Pipeline prêt.")
-
+ 
     def _build_combined_schema(self, docs_dir: str) -> Dict[str, dict]:
         """Combine le schéma structuré (DuckDB) avec les documents non-structurés.
         Le résultat est passé à l'IntentRouter pour qu'il connaisse toutes les sources."""
         schema: Dict[str, dict] = {}
-
+ 
         # 1. Tables structurées : on enrichit avec des échantillons (utile pour le LLM)
         # On ne montre que les colonnes "user" (pas les ID/codes techniques)
         # pour économiser des tokens dans le prompt et éviter de désorienter le LLM.
@@ -110,11 +128,12 @@ class RAGPipeline:
                 "columns": user_cols,
                 "samples": self.structured.samples(table_name, max_per_col=3),
                 "row_count": info.get("row_count", 0),
+                "label_column": info.get("label_column"),   # ← nouveau
                 "is_doc": False,
                 "filename": info["filename"],
                 "structured": True,
             }
-
+ 
         # 2. Documents non-structurés : on délègue à SchemaDiscovery (gère .docx/.pdf)
         from pathlib import Path
         from .generation.intent_router import SchemaDiscovery
@@ -131,7 +150,7 @@ class RAGPipeline:
                         "filename": file.name, "structured": False,
                     }
         return schema
-
+ 
     @staticmethod
     def _normalize_stem(fname: str) -> str:
         """SERVICE (1).xlsx → SERVICE"""
@@ -140,9 +159,9 @@ class RAGPipeline:
         stem = re.sub(r"\s*\(\d+\)\s*$", "", stem)
         stem = re.sub(r"\s*_\d+\s*$", "", stem)
         return stem.strip()
-
+ 
     # ── DÉDUPLICATION ────────────────────────────────────────────────────────
-
+ 
     @staticmethod
     def _deduplicate_chunks(chunks: list) -> list:
         """Supprime les chunks avec un contenu identique (hash SHA256)."""
@@ -157,9 +176,9 @@ class RAGPipeline:
         if removed > 0:
             logger.info("  → %d chunk(s) dupliqué(s) supprimé(s)", removed)
         return unique
-
+ 
     # ── FILTRAGE PAR SOURCE ──────────────────────────────────────────────────
-
+ 
     def _filter_by_source(self, chunks: list, source: Optional[str]) -> list:
         """Privilégie les chunks issus de la source détectée par l'IntentRouter.
         Garde tous les chunks de la source + max 3 chunks d'autres sources."""
@@ -178,30 +197,52 @@ class RAGPipeline:
         logger.info("  → Filtre source: %d/%d chunks retenus (source: %s)",
                     len(result), len(chunks), source)
         return result
-
+ 
     # ── EXTRACTION DIRECTE GÉNÉRIQUE (bypass LLM pour listes) ───────────────
-
+ 
     def _structured_query(self, intent_data: dict) -> Optional[List[Dict]]:
-        """Route une question vers DuckDB si la source est tabulaire.
-        Retourne None si la source est un document non-structuré (.docx/.pdf)
-        ou si elle n'existe pas → le pipeline RAG classique prend le relais.
-        """
+        """Route une question vers DuckDB si la source est tabulaire."""
         source = intent_data.get("source")
         column = intent_data.get("column")
-        filt = intent_data.get("filter") or {}
-
+        filt   = intent_data.get("filter") or {}
+ 
         if not source or source not in self.schema:
             return None
         if self.schema[source].get("is_doc"):
-            return None  # documents texte → pipeline LLM classique
+            return None
         if not self.structured.has_table(source):
-            return None  # source dans le schéma mais pas dans DuckDB (cohérence)
-
+            return None
+ 
+        # ── Sélection intelligente de la colonne ──────────────────────────
+        # Priorité : colonne explicite du LLM > label_column auto-détectée > None
+        # On refuse les colonnes SHORT_* (codes) pour les questions de liste.
+        effective_column = column
+        if column and column.upper().startswith("SHORT_"):
+            effective_column = None  # forcer la résolution automatique
+ 
+        if effective_column is None:
+            # Utilise la colonne "nom lisible" détectée à l'ingestion
+            effective_column = self.structured.label_column(source)
+ 
         results = self.structured.list_values(
-            table=source, column=column, filters=filt, distinct=True,
+            table=source, column=effective_column, filters=filt, distinct=True,
         )
+        # Stocker la colonne effective pour l'affichage aval
+        intent_data["_effective_column"] = effective_column
         return results if results else None
-
+ 
+    def _get_effective_column(self, intent_data: dict, source: Optional[str]) -> Optional[str]:
+        """Retourne la colonne effective après résolution (avec fallback label_column)."""
+        # Déjà calculée lors du _structured_query
+        if "_effective_column" in intent_data:
+            return intent_data["_effective_column"]
+        column = intent_data.get("column")
+        if column and not column.upper().startswith("SHORT_") and source:
+            return column
+        if source and self.structured.has_table(source):
+            return self.structured.label_column(source)
+        return column
+ 
     @staticmethod
     def _fold(text: str) -> str:
         """Normalise pour comparaison : minuscules + suppression d'accents."""
@@ -213,9 +254,9 @@ class RAGPipeline:
                          ("œ","oe"),("æ","ae")]:
             text = text.replace(src, dst)
         return text
-
+ 
     # ── VALIDATION LLM PAR BATCHES (filtrage des résultats d'extraction) ────
-
+ 
     def _llm_validate_batch(
         self,
         question: str,
@@ -223,7 +264,7 @@ class RAGPipeline:
         batch_size: int = 10,
     ) -> List[str]:
         """Filtre une liste de candidats avec le LLM, batch par batch.
-
+ 
         Pour chaque batch de N éléments numérotés, demande au LLM quels
         numéros répondent réellement à la question. L'ordre est préservé.
         En cas d'échec d'un batch (parse, timeout) → on conserve le batch
@@ -231,12 +272,12 @@ class RAGPipeline:
         """
         if not items:
             return items
-
+ 
         kept: List[str] = []
         n_batches = (len(items) + batch_size - 1) // batch_size
         logger.info("  ⟹ Validation LLM: %d éléments en %d batch(es) de %d max",
                     len(items), n_batches, batch_size)
-
+ 
         for b_idx in range(n_batches):
             start = b_idx * batch_size
             batch = items[start:start + batch_size]
@@ -264,11 +305,11 @@ class RAGPipeline:
                 logger.warning("    Batch %d/%d: exception (%s) — conservé",
                                b_idx + 1, n_batches, e)
                 kept.extend(batch)
-
+ 
         logger.info("  ⟹ Validation LLM terminée: %d/%d éléments retenus",
                     len(kept), len(items))
         return kept
-
+ 
     @staticmethod
     def _build_validation_prompt(question: str, batch: List[str]) -> str:
         numbered = "\n".join(f"{i + 1}. {item}" for i, item in enumerate(batch))
@@ -276,12 +317,16 @@ class RAGPipeline:
             f"Question utilisateur:\n{question}\n\n"
             f"Candidats à valider:\n{numbered}\n\n"
             f"Tâche: identifie les numéros des candidats qui répondent EXACTEMENT "
-            f"à la question (rejette les hors-sujet, les doublons orthographiques, "
-            f"les fautes de frappe). Retourne UNIQUEMENT les numéros séparés par "
-            f"des virgules. Si aucun ne convient, retourne 0.\n\n"
+            f"à la question. "
+            f"IMPORTANT: si la question contient un critère (ex: 'obligatoire', 'facultative', "
+            f"un département, un service...), rejette STRICTEMENT tout candidat qui ne "
+            f"correspond pas à ce critère. "
+            f"Rejette aussi les hors-sujet, les doublons orthographiques et les en-têtes de tableau. "
+            f"Retourne UNIQUEMENT les numéros séparés par des virgules. "
+            f"Si aucun ne convient, retourne 0.\n\n"
             f"Numéros retenus:"
         )
-
+ 
     @staticmethod
     def _parse_kept_indices(raw: str, batch_size: int) -> Optional[List[int]]:
         """Parse la réponse LLM en liste d'indices 0-based.
@@ -304,30 +349,30 @@ class RAGPipeline:
                 seen.add(i)
                 indices.append(i)
         return indices
-
+ 
     # ── INGESTION ────────────────────────────────────────────────────────────
-
+ 
     def ingest(self, docs_dir: Optional[str] = None, reset: bool = False) -> Dict[str, Any]:
         """Ingère les documents du dossier dans le RAG."""
         docs_dir = docs_dir or self.config.docs_dir
-
+ 
         logger.info("=" * 50)
         logger.info("INGESTION PIPELINE")
         logger.info("=" * 50)
-
+ 
         if reset:
             logger.info("Réinitialisation du vector store...")
             self.vector_store.reset()
             if os.path.exists(self.config.bm25_index_path):
                 os.remove(self.config.bm25_index_path)
-
+ 
         # 1. Chargement
         logger.info("[1/4] Chargement des documents depuis '%s'...", docs_dir)
         documents = load_directory(docs_dir)
         if not documents:
             raise ValueError(f"Aucun document trouvé dans: {docs_dir}")
         logger.info("  → %d documents chargés", len(documents))
-
+ 
         # 2. Chunking
         logger.info("[2/4] Découpage (chunk_size=%d tokens, overlap=%d)...", self.config.chunk_size, self.config.chunk_overlap)
         chunks = chunk_documents(
@@ -338,7 +383,7 @@ class RAGPipeline:
         )
         logger.info("  → %d chunks créés", len(chunks))
         chunks = self._deduplicate_chunks(chunks)
-
+ 
         # 3. Embeddings
         logger.info("[3/4] Génération des embeddings (%s)...", self.config.embedding_model)
         texts = [c.content for c in chunks]
@@ -348,7 +393,7 @@ class RAGPipeline:
             show_progress=True,
         )
         logger.info("  → Shape: %s", embeddings.shape)
-
+ 
         # 4. Indexation
         logger.info("[4/4] Indexation (ChromaDB + BM25)...")
         self.vector_store.add(
@@ -357,26 +402,26 @@ class RAGPipeline:
             texts=[c.content for c in chunks],
             metadatas=[c.metadata for c in chunks],
         )
-
+ 
         bm25_docs = [
             BM25Document(id=c.id, content=c.content, metadata=c.metadata)
             for c in chunks
         ]
         self.bm25.add_documents(bm25_docs)
         self.bm25.save(self.config.bm25_index_path)
-
+ 
         self._retrieval_cache.clear()
-
+ 
         logger.info("=" * 50)
         logger.info("Ingestion terminée: %d chunks indexés", len(chunks))
         logger.info("=" * 50)
-
+ 
         return {
             "documents": len(documents),
             "chunks": len(chunks),
             "embedding_dim": int(embeddings.shape[1]),
         }
-
+ 
     def ingest_documents(self, documents: List[Document]) -> Dict[str, Any]:
         """Ingère une liste de Documents directement (sans lire un dossier)."""
         chunks = chunk_documents(
@@ -388,7 +433,7 @@ class RAGPipeline:
         if not chunks:
             return {"documents": len(documents), "chunks": 0, "embedding_dim": 0}
         chunks = self._deduplicate_chunks(chunks)
-
+ 
         texts = [c.content for c in chunks]
         embeddings = self.embedder.embed(
             texts,
@@ -408,15 +453,15 @@ class RAGPipeline:
         self.bm25.add_documents(bm25_docs)
         self.bm25.save(self.config.bm25_index_path)
         self._retrieval_cache.clear()
-
+ 
         return {
             "documents": len(documents),
             "chunks": len(chunks),
             "embedding_dim": int(embeddings.shape[1]),
         }
-
+ 
     # ── QUERY ────────────────────────────────────────────────────────────────
-
+ 
     def query(
         self,
         question: str,
@@ -426,51 +471,79 @@ class RAGPipeline:
     ) -> Dict[str, Any]:
         """Interroge le RAG et retourne la réponse avec ses sources."""
         start = time.time()
-
+ 
         # 1. Classification d'intent (1 appel LLM léger, mis en cache)
         intent_data = self.intent_router.classify(question)
         exhaustive = intent_data["exhaustive"]
         source = intent_data["source"]
         column = intent_data["column"]
-
+ 
         # 2. Bypass LLM : requête SQL directe pour les sources tabulaires
         if exhaustive and source:
             direct = self._structured_query(intent_data)
-            # Récupère les warnings éventuels du moteur SQL (filtres ignorés, fallback tokenisé…)
+            # Colonne effective résolue automatiquement par label_column
+            column = self._get_effective_column(intent_data, source)
+            # Récupère les warnings éventuels du moteur SQL
             sql_warnings = list(self.structured.last_warnings)
             if direct:
-                # Dédup case-insensitive + accent-insensitive (fusionne SOCIALE/SOCIALES/SOCIOAL)
+                # ── Filtre de sécurité Python : si un filter était demandé mais
+                # que DuckDB a retourné des résultats sans filtre (warning déclenché),
+                # on applique le filtre manuellement sur les contenus.
+                intent_filter = intent_data.get("filter") or {}
+                if intent_filter and sql_warnings:
+                    # Au moins un filtre a été ignoré (colonne absente) → filtrer en Python
+                    # sur le contenu brut de chaque item avec une correspondance souple.
+                    filtered = []
+                    for d in direct:
+                        content_lower = self._fold(d["content"])
+                        match = True
+                        for fkey, fval in intent_filter.items():
+                            fval_folded = self._fold(str(fval))
+                            if fval_folded not in content_lower:
+                                match = False
+                                break
+                        if match:
+                            filtered.append(d)
+                    if filtered:
+                        logger.info("  → Filtre Python appliqué: %d/%d résultats conservés",
+                                    len(filtered), len(direct))
+                        direct = filtered
+                    # Si le filtre Python n'a rien gardé, on garde tout (failsafe)
+ 
+                # Dédup robuste : sur la valeur d'affichage finale (pas le contenu brut)
+                # Cela supprime les vrais doublons même quand column=None retourne des lignes
+                # complètes avec des colonnes différentes mais un même nom lisible.
                 seen: set = set()
                 unique_items = []
                 for d in direct:
-                    item = d["content"].rstrip(".").strip()
-                    key = self._fold(item)
-                    if key not in seen and len(item) > 2:
+                    # Extraire la valeur d'affichage pour la dédup
+                    display = self._extract_display_value(d["content"], column)
+                    key = self._fold(display)
+                    if key not in seen and len(display.strip()) > 2:
                         seen.add(key)
-                        unique_items.append(item)
-
+                        # Stocker le contenu original mais avec display pour l'affichage
+                        unique_items.append(display)
+ 
                 # Validation LLM par batches : filtre hors-sujet et doublons sémantiques
                 validated = self._llm_validate_batch(
                     question=question,
                     items=unique_items,
                     batch_size=self.config.validation_batch_size,
                 ) if getattr(self.config, "validation_enabled", True) else unique_items
-
-                # Construction de la réponse : on préfixe avec les warnings
-                # (ex: "Filtre ignoré : LIBELLE_ACTIVITE absent de SERVICE")
-                # pour que l'utilisateur ne soit pas trompé par un résultat sans filtre.
+ 
+                # Construction de la réponse
                 prefix_lines = []
                 if sql_warnings:
                     prefix_lines.append("⚠ Note :")
                     for w in sql_warnings:
                         prefix_lines.append(f"  • {w}")
-                    prefix_lines.append("")  # ligne vide
-
+                    prefix_lines.append("")
+ 
                 body = (f"Il y a {len(validated)} résultats :\n"
                         + "\n".join(f"{i+1}. {item}"
                                     for i, item in enumerate(validated)))
                 answer = "\n".join(prefix_lines) + body if prefix_lines else body
-
+ 
                 elapsed = round(time.time() - start, 2)
                 sources = list({d["metadata"].get("filename", "?") for d in direct})
                 logger.info("  ✅ Réponse directe (avec validation LLM): %d éléments en %.2fs",
@@ -485,7 +558,7 @@ class RAGPipeline:
                     "intent":          intent_data,
                     "warnings":        sql_warnings,
                 }
-
+ 
         # 2b. Structured QA : SQL lookup → LLM focalisé.
         # Active quand intent=qa/detail avec une source tabulaire + au moins un filtre.
         # On passe les lignes SQL au LLM au lieu de lancer un retrieval vectoriel sur
@@ -521,7 +594,7 @@ class RAGPipeline:
                     "intent":          intent_data,
                     "warnings":        sql_warnings,
                 }
-
+ 
         # 3. Transformation de la requête (optionnelle)
         if use_query_transform:
             logger.info("  [1/4] Transformation de la requête...")
@@ -530,7 +603,7 @@ class RAGPipeline:
                 logger.info("        → %s", search_query)
         else:
             search_query = question
-
+ 
         # 4. Recherche hybride + Reranking (avec cache)
         cache_key = (search_query.strip().lower(), exhaustive, source, column)
         if cache_key in self._retrieval_cache:
@@ -550,7 +623,7 @@ class RAGPipeline:
             sparse = self.bm25.search(search_query, k=k_sparse)
             hybrid = reciprocal_rank_fusion(dense, sparse, k=self.config.rrf_k)
             logger.info("        Dense: %d | Sparse: %d | RRF: %d", len(dense), len(sparse), len(hybrid))
-
+ 
             logger.info("  [3/4] Reranking...")
             if exhaustive:
                 reranked = self.reranker.rerank(
@@ -573,11 +646,11 @@ class RAGPipeline:
                 del self._retrieval_cache[oldest_key]
             self._retrieval_cache[cache_key] = reranked
         logger.info("        → %d chunks retenus", len(reranked))
-
+ 
         # 5. Filtre par source pertinente
         if source:
             reranked = self._filter_by_source(reranked, source)
-
+ 
         # 6. Génération
         logger.info("  [4/4] Génération LLM...")
         context      = self._format_context(reranked)
@@ -588,9 +661,9 @@ class RAGPipeline:
             question=question,
             history=history_text,
         )
-
+ 
         max_tokens = self.config.llm_max_tokens_long if exhaustive else self.config.llm_max_tokens
-
+ 
         if stream:
             answer_parts = []
             for token in self.llm.generate_stream(
@@ -607,9 +680,9 @@ class RAGPipeline:
                 temperature=self.config.llm_temperature,
                 max_tokens=max_tokens,
             )
-
+ 
         elapsed = round(time.time() - start, 2)
-
+ 
         return {
             "question":        question,
             "search_query":    search_query,
@@ -619,9 +692,44 @@ class RAGPipeline:
             "elapsed_seconds": elapsed,
             "intent":          intent_data,
         }
-
+ 
     # ── Helpers ──────────────────────────────────────────────────────────────
-
+ 
+    @staticmethod
+    def _extract_display_value(item: str, preferred_column: Optional[str] = None) -> str:
+        """Extrait la valeur lisible d'un item brut de DuckDB.
+ 
+        Cas 1 — item simple (pas de format [TABLE] K:V) : retourné tel quel.
+        Cas 2 — format "[TABLE] K1: V1 | K2: V2 | ..." :
+            - Si preferred_column est fournie, cherche "preferred_column: <val>"
+            - Sinon, retourne la valeur de la première paire K: V
+        """
+        # Cas simple : pas de pipe ni de bracket → c'est déjà une valeur propre
+        if "|" not in item and "[" not in item:
+            return item.strip()
+ 
+        # Retire le préfixe [TABLE] s'il existe
+        text = re.sub(r"^\[[^\]]+\]\s*", "", item).strip()
+ 
+        # Cherche la colonne préférée en premier
+        if preferred_column:
+            # Normalise le nom de colonne pour la recherche
+            col_pat = re.escape(preferred_column)
+            m = re.search(rf"{col_pat}\s*:\s*([^|]+)", text, re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+ 
+        # Sinon, retourne la valeur de la première paire "Colonne: Valeur"
+        parts = text.split("|")
+        for part in parts:
+            if ":" in part:
+                val = part.split(":", 1)[1].strip()
+                if val:
+                    return val
+ 
+        # Fallback : retourner l'item brut
+        return item.strip()
+ 
     def _format_history(self, history: List[Dict[str, str]]) -> str:
         if not history:
             return ""
@@ -630,14 +738,14 @@ class RAGPipeline:
             role = "Utilisateur" if msg["role"] == "user" else "Assistant"
             lines.append(f"{role}: {msg['content']}")
         return "Historique:\n" + "\n".join(lines) + "\n\n"
-
+ 
     def _format_context(self, chunks: List[Dict]) -> str:
         """Formate le contexte de façon compacte pour les petits modèles."""
         parts = []
         for i, chunk in enumerate(chunks, 1):
             parts.append(chunk['content'])
         return "\n\n---\n\n".join(parts)
-
+ 
     def _extract_sources(self, chunks: List[Dict]) -> List[str]:
         seen: set = set()
         sources = []
@@ -647,3 +755,4 @@ class RAGPipeline:
                 sources.append(src)
                 seen.add(src)
         return sources
+ 
