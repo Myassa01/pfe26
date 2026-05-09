@@ -100,10 +100,10 @@ Format JSON (une seule ligne) :
 
 Règles :
 - intent=list si la question demande une liste → exhaustive=true
-- intent=qa pour les questions ciblées
+- intent=qa pour les questions ciblées sur une personne ou un élément précis
 - source: EXACTEMENT un nom de table ou null
 - column: colonne marquée ⭐ ou colonne avec valeurs lisibles. Jamais SHORT_*/ID/MATRICULE.
-- filter: {{"COLONNE":"valeur"}} si contrainte explicite, sinon null
+- filter: {{"COLONNE":"valeur"}} si contrainte explicite dans la question, sinon null
 
 Exemples :
 {dynamic_examples}
@@ -113,13 +113,54 @@ JSON:"""
 
 
 class IntentRouter:
-    def __init__(self, llm: HFClient, schema: Dict[str, dict], cache_size: int = 256):
-        self.llm         = llm
-        self.schema      = schema
-        self.cache_size  = cache_size
-        self._cache: "OrderedDict[str, dict]" = OrderedDict()
+    def __init__(
+        self,
+        llm: HFClient,
+        schema: Dict[str, dict],
+        cache_size: int = 256,
+        cache_path: str = "./data/intent_cache.json",  # ← persistant sur disque
+    ):
+        self.llm        = llm
+        self.schema     = schema
+        self.cache_size = cache_size
+        self.cache_path = Path(cache_path)
+
+        # Charge le cache depuis le disque (survit aux redémarrages)
+        self._cache: OrderedDict = self._load_cache()
+
         self._schema_block     = self._build_schema_block(schema)
         self._dynamic_examples = self._build_dynamic_examples(schema)
+
+    # ── Cache persistant ─────────────────────────────────────────────────────
+
+    def _load_cache(self) -> OrderedDict:
+        """Charge le cache depuis le disque au démarrage."""
+        if self.cache_path.exists():
+            try:
+                data = json.loads(self.cache_path.read_text(encoding="utf-8"))
+                logger.info("IntentRouter: cache chargé depuis disque (%d entrées)", len(data))
+                return OrderedDict(data)
+            except Exception as e:
+                logger.warning("IntentRouter: cache illisible (%s) → démarrage à vide", e)
+        return OrderedDict()
+
+    def _save_cache(self) -> None:
+        """Sauvegarde le cache sur disque après chaque nouvelle classification."""
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self.cache_path.write_text(
+                json.dumps(dict(self._cache), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning("IntentRouter: sauvegarde cache échouée (%s)", e)
+
+    def invalidate_cache(self) -> None:
+        """Vide le cache (à appeler après un changement de schéma / nouvel Excel)."""
+        self._cache.clear()
+        if self.cache_path.exists():
+            self.cache_path.unlink(missing_ok=True)
+        logger.info("IntentRouter: cache invalidé.")
 
     # ── Public ───────────────────────────────────────────────────────────────
 
@@ -127,6 +168,7 @@ class IntentRouter:
         key = self._normalize_question(question)
         if key in self._cache:
             self._cache.move_to_end(key)
+            logger.debug("IntentRouter: cache hit pour %r", question[:60])
             return self._cache[key]
 
         prompt = _PROMPT_TEMPLATE.format(
@@ -151,9 +193,12 @@ class IntentRouter:
                     result["intent"], result["source"], result["column"],
                     result["exhaustive"], result["confidence"])
 
+        # Sauvegarde dans le cache + persist sur disque
         self._cache[key] = result
         if len(self._cache) > self.cache_size:
             self._cache.popitem(last=False)
+        self._save_cache()
+
         return result
 
     # ── Private ───────────────────────────────────────────────────────────────
@@ -205,6 +250,7 @@ class IntentRouter:
                 continue
             table_label = table_name.replace("_", " ").lower()
 
+            # Exemple liste
             lines.append(f'Q: "Liste des {table_label}"')
             lines.append(
                 f'{{"intent":"list","source":"{table_name}",'
@@ -212,6 +258,7 @@ class IntentRouter:
             )
             lines.append("")
 
+            # Exemple avec filtre
             filter_col = self._pick_filter_col(columns, samples, exclude=display_col)
             if filter_col:
                 sample_vals = samples.get(filter_col, [])
@@ -223,6 +270,8 @@ class IntentRouter:
                     f'"filter":{{"{filter_col}":"{filter_val}"}}}}'
                 )
                 lines.append("")
+
+                # Exemple QA personne
                 lines.append(f'Q: "Qui est responsable de {filter_val} ?"')
                 lines.append(
                     f'{{"intent":"qa","source":"{table_name}",'
@@ -230,9 +279,8 @@ class IntentRouter:
                     f'"filter":{{"{filter_col}":"{filter_val}"}}}}'
                 )
                 lines.append("")
-        return "\n".join(lines) if lines else "(aucun exemple généré)"
 
-    # ── ✅ _parse_json est une méthode de IntentRouter ───────────────────────
+        return "\n".join(lines) if lines else "(aucun exemple généré)"
 
     def _parse_json(self, raw: str) -> Optional[dict]:
         if not raw:
