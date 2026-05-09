@@ -120,31 +120,49 @@ Règles:
 - "intent":"detail" si la question demande une explication ("explique", "détails").
 - "intent":"qa" pour toute question ciblée ("qui est X", "combien").
 - "source": EXACTEMENT un nom de table parmi la liste, ou null si vraiment aucune ne convient.
-- "column": EXACTEMENT un nom de colonne de la table choisie. Regarde les exemples de valeurs pour identifier la bonne colonne. null si la question vise toute la ligne.
+- "column": UTILISE TOUJOURS la colonne marquée ⭐ COLONNE RECOMMANDÉE si elle existe dans le schéma. Elle contient les noms lisibles complets. N'utilise JAMAIS les colonnes SHORT_* (codes courts). Si aucune recommandation, choisis la colonne avec les valeurs les plus descriptives.
 - "exhaustive":true si intent="list", sinon false.
-- "filter": dict {{"NOM_COLONNE_REEL":"valeur"}} pour les contraintes. UTILISE LE VRAI NOM DE COLONNE de la table (vu dans le schéma), JAMAIS un nom inventé.
+- "filter": TRÈS IMPORTANT — si la question contient un qualificatif (ex: "obligatoire", "facultative", "d'un département X", "de type Y"), tu DOIS mettre ce critère dans filter avec le NOM DE COLONNE RÉEL de la table. JAMAIS un nom inventé. Si aucun critère, mettre null.
 
 Exemples (basés sur le schéma ci-dessus):
 Q: "Donne-moi la liste des services"
-JSON: {{"intent":"list","source":"SERVICE","column":null,"exhaustive":true,"filter":null}}
+JSON: {{"intent":"list","source":"SERVICE","column":"CHANTIER","exhaustive":true,"filter":null}}
 
-Q: "Quels sont les directeurs ?"
-JSON: {{"intent":"list","source":"DIRECTION","column":null,"exhaustive":true,"filter":null}}
+Q: "Quels sont les services disponibles ?"
+JSON: {{"intent":"list","source":"SERVICE","column":"CHANTIER","exhaustive":true,"filter":null}}
+
+Q: "Quels sont les directions disponibles ?"
+JSON: {{"intent":"list","source":"DIRECTION","column":"CHANTIER","exhaustive":true,"filter":null}}
+
+Q: "Liste des directions"
+JSON: {{"intent":"list","source":"DIRECTION","column":"CHANTIER","exhaustive":true,"filter":null}}
+
+Q: "Quels sont les départements ?"
+JSON: {{"intent":"list","source":"DEPARTEMENT","column":"CHANTIER","exhaustive":true,"filter":null}}
 
 Q: "Liste des chefs de département"
-JSON: {{"intent":"list","source":"DEPARTEMENT","column":null,"exhaustive":true,"filter":null}}
+JSON: {{"intent":"list","source":"DEPARTEMENT","column":"CHANTIER","exhaustive":true,"filter":null}}
 
 Q: "Services de la direction DRH"
-JSON: {{"intent":"list","source":"SERVICE","column":null,"exhaustive":true,"filter":{{"SHORT_LIBELLE_DIRECTION":"DRH"}}}}
+JSON: {{"intent":"list","source":"SERVICE","column":"CHANTIER","exhaustive":true,"filter":{{"SHORT_LIBELLE_DIRECTION":"DRH"}}}}
 
 Q: "Postes dans l'activité électricité"
-JSON: {{"intent":"list","source":"POSTE","column":null,"exhaustive":true,"filter":{{"LIBELLE_ACTIVITE":"électricité"}}}}
+JSON: {{"intent":"list","source":"POSTE","column":"CHANTIER","exhaustive":true,"filter":{{"LIBELLE_ACTIVITE":"électricité"}}}}
 
 Q: "Qui est le chef du département DRH ?"
 JSON: {{"intent":"qa","source":"DEPARTEMENT","column":null,"exhaustive":false,"filter":{{"SHORT_LIBELLE_DIRECTION":"DRH"}}}}
 
 Q: "Combien de directions ?"
-JSON: {{"intent":"list","source":"DIRECTION","column":null,"exhaustive":true,"filter":null}}
+JSON: {{"intent":"list","source":"DIRECTION","column":"CHANTIER","exhaustive":true,"filter":null}}
+
+Q: "Quelles sont les formations obligatoires ?"
+JSON: {{"intent":"list","source":"KAM_FORMATIONS_GTP","column":"INTITULE_DE_LA_FORMATION","exhaustive":true,"filter":{{"STATUT":"Obligatoire"}}}}
+
+Q: "Liste des formations facultatives"
+JSON: {{"intent":"list","source":"KAM_FORMATIONS_GTP","column":"INTITULE_DE_LA_FORMATION","exhaustive":true,"filter":{{"STATUT":"Facultative"}}}}
+
+Q: "Toutes les formations"
+JSON: {{"intent":"list","source":"KAM_FORMATIONS_GTP","column":"INTITULE_DE_LA_FORMATION","exhaustive":true,"filter":null}}
 
 Question: {question}
 JSON:"""
@@ -206,11 +224,7 @@ class IntentRouter:
 
     def _build_schema_block(self, schema: Dict[str, dict]) -> str:
         """Expose chaque source avec colonnes + 2-3 valeurs d'exemple par colonne.
-
-        Indispensable pour que le LLM devine la sémantique des colonnes
-        techniques (ex: 'CHANTIER'='Service Informatique' → c'est un nom de
-        service, pas un chantier de BTP). Sans samples, le routing échoue.
-        """
+        Indique aussi la colonne recommandée (label_column) pour les listes."""
         if not schema:
             return "(aucune source disponible)"
         lines = []
@@ -218,21 +232,23 @@ class IntentRouter:
             if info.get("is_doc"):
                 lines.append(f"* {name} (document texte) — descriptions, explications")
                 continue
-            cols = info.get("columns", [])
-            samples = info.get("samples", {})
-            row_count = info.get("row_count", "?")
+            cols       = info.get("columns", [])
+            samples    = info.get("samples", {})
+            row_count  = info.get("row_count", "?")
+            label_col  = info.get("label_column")  # colonne recommandée pour les listes
 
-            # En-tête : nom + nb lignes
             lines.append(f"* {name} ({row_count} lignes) :")
+            if label_col:
+                lines.append(f"    ⭐ COLONNE RECOMMANDÉE POUR LES LISTES : {label_col}")
 
-            # Une ligne par colonne, avec 2-3 exemples
             for col in cols:
                 vals = samples.get(col, [])
+                marker = " ⭐" if col == label_col else ""
                 if vals:
                     sample_str = ", ".join(f'"{v}"' for v in vals[:3])
-                    lines.append(f"    - {col} → ex: {sample_str}")
+                    lines.append(f"    - {col}{marker} → ex: {sample_str}")
                 else:
-                    lines.append(f"    - {col}")
+                    lines.append(f"    - {col}{marker}")
         return "\n".join(lines)
 
     def _parse_json(self, raw: str) -> Optional[dict]:
