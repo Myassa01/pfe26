@@ -31,11 +31,7 @@ class StructuredQueryEngine:
         import duckdb
         self._duckdb = duckdb
         self.conn = duckdb.connect(":memory:")
-        # Mapping nom_normalisé (UPPERCASE, sans extension) → métadonnées de la table
-        # {table_name: {"filename": str, "columns": [str], "row_count": int}}
         self.tables: Dict[str, Dict[str, Any]] = {}
-        # Warnings de la dernière requête (filtres ignorés, fallback déclenché…).
-        # Lecture par le pipeline pour informer l'utilisateur.
         self.last_warnings: List[str] = []
         self.docs_dir = docs_dir
         self._load_all(docs_dir)
@@ -59,9 +55,6 @@ class StructuredQueryEngine:
                     loaded, ", ".join(self.tables.keys()) or "—")
 
     def _load_excel(self, path: Path) -> None:
-        """Charge un Excel comme table DuckDB. Utilise openpyxl pour respecter
-        l'auto-détection du header (cas KAM_Formations_GTP) puis insère via
-        DuckDB."""
         from ..ingestion.loader import _detect_header_row
         import openpyxl
 
@@ -73,14 +66,12 @@ class StructuredQueryEngine:
             for cell in ws[header_row]:
                 headers.append(str(cell.value).strip() if cell.value else "")
 
-            # Colonnes : on garde celles non vides, on les rend SQL-safe
             keep_idx = [i for i, h in enumerate(headers) if h]
             sql_headers = [self._sql_ident(headers[i]) for i in keep_idx]
             if not sql_headers:
                 logger.warning("  ⚠ %s: aucune colonne valide", path.name)
                 return
 
-            # Désambiguïser les doublons (DuckDB refuse les colonnes en double)
             seen: Dict[str, int] = {}
             unique_headers: List[str] = []
             for h in sql_headers:
@@ -94,9 +85,8 @@ class StructuredQueryEngine:
             rows: List[List[Optional[str]]] = []
             for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
                 values = [row[i] if i < len(row) else None for i in keep_idx]
-                # Toutes les valeurs en str pour cohérence (les types Excel sont incertains)
                 values = [None if v is None else str(v).strip() for v in values]
-                if any(v for v in values):  # ignorer lignes complètement vides
+                if any(v for v in values):
                     rows.append(values)
         finally:
             wb.close()
@@ -108,27 +98,21 @@ class StructuredQueryEngine:
         table_name = self._normalize_stem(path.name)
         sql_table = self._sql_ident(table_name)
 
-        # CREATE TABLE avec colonnes VARCHAR
         cols_def = ", ".join(f'"{c}" VARCHAR' for c in unique_headers)
         self.conn.execute(f'CREATE OR REPLACE TABLE "{sql_table}" ({cols_def})')
 
-        # INSERT en bulk — placeholders paramétrés (pas de concaténation user input)
         placeholders = ", ".join(["?"] * len(unique_headers))
         self.conn.executemany(
             f'INSERT INTO "{sql_table}" VALUES ({placeholders})',
             rows,
         )
 
-        # Détection automatique des colonnes "techniques" (ID, codes internes…) :
-        # une colonne est technique si la majorité de ses valeurs sont numériques
-        # ou des codes courts (≤6 chars). On les masquera dans les sorties
-        # destinées à l'utilisateur final, tout en les gardant requêtable en SQL.
         technical_cols = self._detect_technical_columns(sql_table, unique_headers, len(rows))
 
         self.tables[table_name] = {
             "filename": path.name,
             "columns": unique_headers,
-            "technical_columns": technical_cols,  # set
+            "technical_columns": technical_cols,
             "user_columns": [c for c in unique_headers if c not in technical_cols],
             "row_count": len(rows),
             "sql_table": sql_table,
@@ -142,21 +126,12 @@ class StructuredQueryEngine:
                         path.name, sql_table, len(rows), len(unique_headers))
 
     def _detect_technical_columns(self, sql_table: str, columns: List[str], row_count: int) -> set:
-        """Détecte les colonnes ID/code interne — à masquer dans les sorties user.
-
-        Heuristiques (additives) :
-            - >70% des valeurs non-vides sont purement numériques  → technique
-            - >70% des valeurs ont len ≤ 6 ET sont alphanumériques  → technique
-            - Toutes les valeurs sont uniques ET numériques        → ID-like
-            - Nom de colonne dans une liste de mots-clés évidents  → technique
-        """
         if row_count == 0:
             return set()
         sample_size = min(row_count, 200)
-        techincal_name_hints = {"ID", "CODE", "CD"}  # évident
+        techincal_name_hints = {"ID", "CODE", "CD"}
         technical: set = set()
         for col in columns:
-            # Hint par nom (préfixe / mot complet)
             up = col.upper()
             if up in techincal_name_hints or up.startswith(("CD_", "ID_", "NUM_")):
                 technical.add(col)
@@ -178,7 +153,6 @@ class StructuredQueryEngine:
             if numeric / n > 0.7:
                 technical.add(col)
             elif short_alphanum / n > 0.7 and numeric / n > 0.3:
-                # codes mixtes (lettres + chiffres courts, type 904300)
                 technical.add(col)
         return technical
 
@@ -186,7 +160,6 @@ class StructuredQueryEngine:
 
     @staticmethod
     def _normalize_stem(fname: str) -> str:
-        """SERVICE (1).xlsx → SERVICE  ;  KAM_Formations_GTP.xlsx → KAM_FORMATIONS_GTP"""
         stem = fname.rsplit(".", 1)[0] if "." in fname else fname
         stem = stem.upper().strip()
         stem = re.sub(r"\s*\(\d+\)\s*$", "", stem)
@@ -195,11 +168,8 @@ class StructuredQueryEngine:
 
     @staticmethod
     def _sql_ident(name: str) -> str:
-        """Rend un nom de colonne/table sûr pour SQL (alphanumérique + _)."""
-        # Retire accents
         nfd = unicodedata.normalize("NFD", name)
         ascii_name = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
-        # Garde alphanum et _, remplace le reste par _
         cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", ascii_name).strip("_").upper()
         if not cleaned:
             cleaned = "COL"
@@ -209,13 +179,11 @@ class StructuredQueryEngine:
 
     @staticmethod
     def _fold(text: str) -> str:
-        """Normalise pour comparaison floue (minuscules + sans accents)."""
         nfd = unicodedata.normalize("NFD", str(text))
         ascii_text = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
         return ascii_text.lower().strip()
 
     def _resolve_column(self, table: str, column: Optional[str]) -> Optional[str]:
-        """Résout un nom de colonne (LLM) vers le nom SQL réel (insensible casse/accents)."""
         if not column:
             return None
         cols = self.tables[table]["columns"]
@@ -233,7 +201,6 @@ class StructuredQueryEngine:
             or name in self.tables
 
     def schema(self) -> Dict[str, Dict[str, Any]]:
-        """Retourne le schéma sans la connexion DuckDB (pour SchemaDiscovery)."""
         return {
             name: {
                 "columns": info["columns"],
@@ -245,7 +212,6 @@ class StructuredQueryEngine:
         }
 
     def samples(self, table: str, max_per_col: int = 3, max_len: int = 40) -> Dict[str, List[str]]:
-        """Échantillons de valeurs distinctes par colonne (pour le prompt LLM)."""
         table = self._normalize_stem(table) if table not in self.tables else table
         if table not in self.tables:
             return {}
@@ -272,15 +238,7 @@ class StructuredQueryEngine:
         distinct: bool = True,
         hide_technical: bool = True,
     ) -> List[Dict[str, Any]]:
-        """Retourne les valeurs d'une colonne (ou les lignes complètes si column=None).
-
-        column=None → retourne toutes les colonnes (List[Dict[col, value]])
-        column="X"  → retourne List[Dict["content": value, "metadata": {...}]]
-                       pour cohérence avec le format chunk attendu par pipeline.
-
-        filters : appliqués en LOWER(col) LIKE LOWER(?), insensible accents/casse.
-        """
-        self.last_warnings = []  # reset à chaque appel
+        self.last_warnings = []
         table = self._normalize_stem(table) if table not in self.tables else table
         if table not in self.tables:
             return []
@@ -288,10 +246,7 @@ class StructuredQueryEngine:
         meta_filename = self.tables[table]["filename"]
         all_cols = self.tables[table]["columns"]
 
-        # Résoudre les noms de colonnes (filter + select) vs schéma réel
-        # Les filtres sur des colonnes INCONNUES sont droppés ET signalés :
-        # silence = trompeur (l'utilisateur croit que son filtre a été appliqué).
-        resolved_filters: List[tuple] = []  # [(sql_col, value), ...]
+        resolved_filters: List[tuple] = []
         dropped_filters: List[str] = []
         for fkey, fval in (filters or {}).items():
             sql_col_filter = self._resolve_column(table, fkey)
@@ -308,12 +263,9 @@ class StructuredQueryEngine:
 
         sql_col = self._resolve_column(table, column) if column else None
 
-        # SELECT clause
         if sql_col:
             select_clause = f'"{sql_col}"'
         else:
-            # Sortie utilisateur : on retire les colonnes techniques (ID, codes…)
-            # à moins que l'appelant demande explicitement de les garder.
             if hide_technical:
                 cols = self.tables[table].get("user_columns") or self.tables[table]["columns"]
             else:
@@ -322,7 +274,6 @@ class StructuredQueryEngine:
 
         distinct_kw = "DISTINCT " if distinct else ""
 
-        # WHERE clause — toujours paramétrée
         where_parts = []
         params: List[str] = []
         if sql_col:
@@ -343,13 +294,9 @@ class StructuredQueryEngine:
             rows = cursor.fetchall()
             col_names = [d[0] for d in cursor.description]
         except Exception as e:
-            # Fallback si strip_accents indispo (DuckDB ancien) → comparaison lower simple
             logger.warning("StructuredQueryEngine: requête SQL échouée (%s) — fallback lower", e)
             return self._list_values_fallback(table, column, filters, distinct)
 
-        # ── Fallback tokenisé : si 0 résultats avec un filter, retenter en
-        # tokenisant la valeur pour absorber les fautes de frappe et variations
-        # ("Chef de départment" → AND chef AND depart).
         if not rows and resolved_filters:
             tokenized_where = []
             tokenized_params: List[str] = []
@@ -359,8 +306,6 @@ class StructuredQueryEngine:
             had_tokens = False
             for col, val in resolved_filters:
                 tokens = [t for t in re.split(r"\s+", val.strip()) if len(t) >= 3]
-                # On garde le préfixe (4-5 premiers chars) pour matcher les variations
-                # ex: "départment" → "dépar" matche "département"
                 tokens = [t[:5] if len(t) > 5 else t for t in tokens]
                 for t in tokens:
                     tokenized_where.append(
@@ -398,7 +343,6 @@ class StructuredQueryEngine:
                     "metadata": {"filename": meta_filename, "table": table, "column": sql_col},
                 })
             else:
-                # Reconstruire un texte type chunk "[SOURCE] K1: V1 | K2: V2"
                 pairs = [f"{c}: {v}" for c, v in zip(col_names, row) if v is not None and str(v).strip()]
                 if not pairs:
                     continue
@@ -413,7 +357,6 @@ class StructuredQueryEngine:
         return results
 
     def _list_values_fallback(self, table, column, filters, distinct, hide_technical=True):
-        """Si strip_accents indispo, on rappatrie tout et on filtre en Python."""
         sql_table = self.tables[table]["sql_table"]
         meta_filename = self.tables[table]["filename"]
         cols = self.tables[table]["columns"]
@@ -458,9 +401,26 @@ class StructuredQueryEngine:
         return results
 
     def count_rows(self, table: str, filters: Optional[Dict[str, str]] = None) -> int:
-        """Compte les lignes (avec filtres optionnels)."""
         rows = self.list_values(table, column=None, filters=filters, distinct=False)
         return len(rows)
+
+    # ── RECHARGEMENT DYNAMIQUE ────────────────────────────────────────────────
+
+    def reload(self, docs_dir: Optional[str] = None) -> int:
+        """Recharge tous les Excel depuis docs_dir dans DuckDB sans redémarrer l'app.
+
+        À appeler après chaque ingestion (pipeline.ingest / ingest_documents).
+        """
+        target_dir = docs_dir or self.docs_dir
+        self.conn.close()
+        import duckdb
+        self.conn = duckdb.connect(":memory:")
+        self.tables.clear()
+        self.last_warnings = []
+        self._load_all(target_dir)
+        logger.info("StructuredQueryEngine.reload(): %d table(s) — %s",
+                    len(self.tables), ", ".join(self.tables.keys()) or "—")
+        return len(self.tables)
 
     def close(self) -> None:
         try:
