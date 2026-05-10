@@ -132,7 +132,6 @@ class StructuredQueryEngine:
             "user_columns": [c for c in unique_headers if c not in technical_cols],
             "row_count": len(rows),
             "sql_table": sql_table,
-            "label_column": self._detect_label_column(sql_table, unique_headers, table_name, len(rows)),
         }
         if technical_cols:
             logger.info("  ✓ %s → table %s (%d lignes, %d colonnes ; techniques: %s)",
@@ -182,108 +181,6 @@ class StructuredQueryEngine:
                 # codes mixtes (lettres + chiffres courts, type 904300)
                 technical.add(col)
         return technical
-
-        return technical
-
-    def _detect_label_column(self, sql_table: str, columns: List[str],
-                              table_name: str, row_count: int) -> Optional[str]:
-        """Détecte automatiquement la colonne "nom lisible" d'une table.
-
-        Stratégie en 4 passes (ordre de priorité) :
-        1. Colonne dont le nom contient le nom de la table  (ex: CHANTIER dans
-           DEPARTEMENT quand les valeurs commencent par "DEPARTEMENT …").
-        2. Colonne LIBELLE_* / INTITULE_* / DESIGNATION_* / NOM_* non-technique.
-        3. Colonne dont les valeurs sont les plus longues en moyenne (texte riche).
-        4. Première colonne non-technique non-numérique.
-        """
-        if not columns or row_count == 0:
-            return None
-
-        table_keyword = table_name.upper()          # ex: "SERVICE", "DEPARTEMENT"
-        sample_size   = min(row_count, 50)
-
-        # Pré-calcul des stats par colonne (avg length, % text, % starts with table keyword)
-        stats: Dict[str, dict] = {}
-        for col in columns:
-            try:
-                rows = self.conn.execute(
-                    f'SELECT "{col}" FROM "{sql_table}" '
-                    f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\' '
-                    f'LIMIT {sample_size}'
-                ).fetchall()
-            except Exception:
-                continue
-            if not rows:
-                continue
-            vals = [str(r[0]).strip() for r in rows]
-            n = len(vals)
-            avg_len      = sum(len(v) for v in vals) / n
-            pct_numeric  = sum(1 for v in vals if v.replace(".", "").replace(",", "").replace("-", "").isdigit()) / n
-            pct_keyword  = sum(1 for v in vals if v.upper().startswith(table_keyword)) / n
-            # Valeurs distinctes
-            n_distinct   = len({v.upper() for v in vals})
-            stats[col] = {
-                "avg_len":     avg_len,
-                "pct_numeric": pct_numeric,
-                "pct_keyword": pct_keyword,
-                "n_distinct":  n_distinct,
-                "n":           n,
-            }
-
-        if not stats:
-            return None
-
-        # Passe 1 : colonne dont >50% des valeurs commencent par le nom de la table
-        kw_candidates = [
-            c for c, s in stats.items()
-            if s["pct_keyword"] > 0.5 and s["pct_numeric"] < 0.3 and s["avg_len"] > 8
-        ]
-        if kw_candidates:
-            # Prendre celle avec le plus fort % keyword
-            best = max(kw_candidates, key=lambda c: stats[c]["pct_keyword"])
-            logger.info("  ✦ label_column [pass1-keyword] %s → %r", table_name, best)
-            return best
-
-        # Passe 2 : colonnes avec nom sémantique connu
-        priority_prefixes = ["LIBELLE_", "INTITULE_", "DESIGNATION_", "NOM_", "TITRE_"]
-        # Exclure les colonnes SHORT_* (codes courts)
-        for prefix in priority_prefixes:
-            candidates = [
-                c for c in columns
-                if c.upper().startswith(prefix)
-                and not c.upper().startswith("SHORT_")
-                and c in stats
-                and stats[c]["pct_numeric"] < 0.3
-            ]
-            if candidates:
-                best = max(candidates, key=lambda c: stats[c]["avg_len"])
-                logger.info("  ✦ label_column [pass2-prefix] %s → %r", table_name, best)
-                return best
-
-        # Passe 3 : colonne texte la plus longue (avg_len max), non-numérique
-        text_cols = [
-            c for c, s in stats.items()
-            if s["pct_numeric"] < 0.2
-            and s["avg_len"] > 6
-            and not c.upper().startswith(("ID_", "CD_", "NUM_", "SHORT_"))
-            and c.upper() not in ("ID", "CODE", "AFFECTATION", "MATRICULE",
-                                   "OBSERVATION", "AFFECT_PAR")
-        ]
-        if text_cols:
-            best = max(text_cols, key=lambda c: stats[c]["avg_len"])
-            logger.info("  ✦ label_column [pass3-longest] %s → %r", table_name, best)
-            return best
-
-        # Passe 4 : fallback — première colonne non-technique non-numérique
-        fallback = next(
-            (c for c in columns
-             if c in stats and stats[c]["pct_numeric"] < 0.5
-             and c.upper() not in ("ID", "AFFECTATION", "MATRICULE")),
-            None
-        )
-        if fallback:
-            logger.info("  ✦ label_column [pass4-fallback] %s → %r", table_name, fallback)
-        return fallback
 
     # ── Helpers normalisation ─────────────────────────────────────────────
 
@@ -335,13 +232,6 @@ class StructuredQueryEngine:
         return self._normalize_stem(name) in self.tables \
             or name in self.tables
 
-    def label_column(self, table: str) -> Optional[str]:
-        """Retourne la colonne 'nom lisible' détectée automatiquement pour une table."""
-        t = self._normalize_stem(table) if table not in self.tables else table
-        if t not in self.tables:
-            return None
-        return self.tables[t].get("label_column")
-
     def schema(self) -> Dict[str, Dict[str, Any]]:
         """Retourne le schéma sans la connexion DuckDB (pour SchemaDiscovery)."""
         return {
@@ -349,7 +239,6 @@ class StructuredQueryEngine:
                 "columns": info["columns"],
                 "filename": info["filename"],
                 "row_count": info["row_count"],
-                "label_column": info.get("label_column"),
                 "is_doc": False,
             }
             for name, info in self.tables.items()
