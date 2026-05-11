@@ -51,7 +51,7 @@ class Config:
     # Active une étape de filtrage : les éléments extraits sont passés au LLM
     # par groupes de N pour éliminer les hors-sujet, doublons orthographiques,
     # fautes de frappe ("SOCIALE"/"SOCIALES"/"SOCIOAL" → fusionnés).
-    validation_enabled: bool = True
+    validation_enabled: bool = False
     validation_batch_size: int = 10
 
     # ── Chemins ─────────────────────────────────────────────────────────────
