@@ -50,15 +50,7 @@ Formatte la réponse sous forme de liste numérotée. Ne résume pas, ne regroup
 
 Réponse:"""
 
-# Colonnes prioritaires par table — la première trouvée est utilisée comme
-# "nom principal" dans la liste numérotée.
-# Adaptez ces noms aux colonnes réelles de vos fichiers Excel.
-_PRIMARY_COLUMN_BY_TABLE = {
-    "SERVICE":     ["CHANTIER", "LIBELLE_SERVICE", "NOM_SERVICE", "SERVICE"],
-    "DIRECTION":   ["LIBELLE_DIRECTION", "SHORT_LIBELLE_DIRECTION", "DIRECTION", "NOM"],
-    "DEPARTEMENT": ["LIBELLE_DEPARTEMENT", "DEPARTEMENT", "NOM_DEPARTEMENT", "NOM"],
-    "POSTE":       ["LIBELLE_POSTE", "POSTE", "NOM_POSTE", "NOM"],
-}
+
 
 
 class RAGPipeline:
@@ -205,48 +197,40 @@ class RAGPipeline:
 
     # ── EXTRACTION DU NOM PRINCIPAL D'UN ITEM ────────────────────────────────
 
-    @staticmethod
-    def _extract_primary_value(item: str, source: Optional[str]) -> str:
-        """Extrait uniquement la valeur principale d'un item DuckDB.
+    def _extract_primary_value(self, item: str, source: Optional[str]) -> str:
+        """Extrait la valeur principale d'un item DuckDB — 100% dynamique.
 
-        Un item ressemble à :
-            "[SERVICE] SHORT_LIBELLE_DIRECTION: DCG | CHANTIER: SERVICE HELP DESK | NOM: LAMRI"
-
-        On cherche la colonne prioritaire définie dans _PRIMARY_COLUMN_BY_TABLE
-        pour la source donnée. Si aucune n'est trouvée, on retourne la première
-        valeur disponible.
+        Utilise get_primary_column() de StructuredQueryEngine qui détecte
+        automatiquement la colonne la plus descriptive de chaque table,
+        sans aucun nom de colonne hard-codé.
         """
-        # Retire le préfixe [SOURCE]
         content = item
         if "] " in content and content.startswith("["):
             content = content.split("] ", 1)[1]
 
-        # Parse en dict {colonne_upper: valeur}
         pairs: Dict[str, str] = {}
         for part in content.split(" | "):
             part = part.strip()
             if ": " in part:
                 k, v = part.split(": ", 1)
                 pairs[k.strip().upper()] = v.strip().rstrip(".")
-            else:
+            elif part:
                 pairs.setdefault("__RAW__", part.strip())
 
         if not pairs:
             return item
 
-        # Cherche la colonne prioritaire selon la table
-        priority_cols = _PRIMARY_COLUMN_BY_TABLE.get(source or "", [])
-        for col in priority_cols:
-            val = pairs.get(col.upper())
-            if val:
-                return val
+        # Colonne principale détectée dynamiquement par DuckDB
+        if source and self.structured.has_table(source):
+            primary_col = self.structured.get_primary_column(source)
+            if primary_col:
+                val = pairs.get(primary_col.upper())
+                if val and len(val) > 2:
+                    return val
 
-        # Fallback : première valeur non vide
-        for v in pairs.values():
-            if v:
-                return v
-
-        return item
+        # Fallback : valeur la plus longue = la plus descriptive
+        best = max(pairs.values(), key=lambda v: len(v), default=item)
+        return best if len(best) > 2 else item
 
     # ── VALIDATION LLM PAR BATCHES ───────────────────────────────────────────
 
