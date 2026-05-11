@@ -422,6 +422,136 @@ class StructuredQueryEngine:
                     len(self.tables), ", ".join(self.tables.keys()) or "—")
         return len(self.tables)
 
+    def get_primary_column(self, table: str) -> Optional[str]:
+        """Détecte la colonne qui contient le NOM PRINCIPAL de chaque ligne.
+
+        Stratégie en 3 passes (sans aucun nom de colonne hard-codé) :
+
+        Passe 1 — Mots-clés sémantiques dans le NOM de la colonne
+            On cherche des mots qui signifient "nom" ou "libellé" dans toutes
+            les langues et conventions courantes des Excel RH/entreprise.
+            Une colonne nommée CHANTIER, LIBELLE_SERVICE, NOM_DIRECTION, etc.
+            obtient un bonus fort s'il y a des mots-clés dans son nom.
+            → Évite de choisir FONCTION ou OBSERVATION à la place du libellé.
+
+        Passe 2 — Analyse statistique des valeurs réelles
+            Pour chaque colonne candidate, calcule :
+              - ratio_unique : nb_distinct / nb_lignes  (proche de 1 = chaque
+                ligne a son propre nom → c'est bien un identifiant descriptif)
+              - avg_len : longueur moyenne des valeurs
+            Score = ratio_unique × avg_len × bonus_semantique
+
+        Passe 3 — Fallback
+            Si aucun score positif, retourne la première colonne user.
+        """
+        import math
+
+        table = self._normalize_stem(table) if table not in self.tables else table
+        if table not in self.tables:
+            return None
+
+        sql_table  = self.tables[table]["sql_table"]
+        user_cols  = self.tables[table].get("user_columns") or self.tables[table]["columns"]
+        row_count  = self.tables[table]["row_count"]
+
+        if not user_cols:
+            return None
+        if len(user_cols) == 1:
+            return user_cols[0]
+
+        # ── Passe 1 : bonus sémantique sur le NOM de la colonne ─────────────
+        # Mots qui indiquent "libellé principal" dans les Excel algériens / FR
+        # On teste des sous-chaînes pour couvrir LIBELLE_SERVICE, CHANTIER, etc.
+        # On pénalise les colonnes qui décrivent un rôle/fonction, pas un nom.
+        NAME_KEYWORDS   = [
+            "LIBELLE", "NOM", "INTITULE", "DESIGNATION",
+            "CHANTIER",   # convention Sonatrach pour nom de service
+            "TITRE", "LABEL", "DESCRIPTION",
+        ]
+        PENALTY_KEYWORDS = [
+            "FONCTION", "OBSERVATION", "STATUT", "STATUS",
+            "PRENOM", "EMAIL", "TEL", "DATE", "MATRICULE",
+            "GRADE", "CATEGORIE", "NIVEAU",
+        ]
+
+        def _semantic_bonus(col_name: str) -> float:
+            up = col_name.upper()
+            for kw in PENALTY_KEYWORDS:
+                if kw in up:
+                    return 0.0          # éliminé
+            for kw in NAME_KEYWORDS:
+                if kw in up:
+                    return 2.0          # bonus fort
+            # Le nom de la colonne == nom de la table → c'est souvent le libellé
+            table_stem = table.upper().replace("_", "")
+            col_stem   = up.replace("_", "")
+            if table_stem in col_stem or col_stem in table_stem:
+                return 1.5
+            return 1.0                  # neutre
+
+        # ── Passe 2 : analyse statistique ───────────────────────────────────
+        best_col:   Optional[str] = None
+        best_score: float = -1.0
+
+        for col in user_cols:
+            bonus = _semantic_bonus(col)
+            if bonus == 0.0:
+                continue               # colonne pénalisée → ignorée
+
+            try:
+                row = self.conn.execute(
+                    f'SELECT COUNT(DISTINCT "{col}"), COUNT("{col}") '
+                    f'FROM "{sql_table}" '
+                    f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\''
+                ).fetchone()
+                distinct_count, non_null = (row[0], row[1]) if row else (0, 0)
+
+                if distinct_count == 0:
+                    continue
+
+                sample = self.conn.execute(
+                    f'SELECT "{col}" FROM "{sql_table}" '
+                    f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\' '
+                    f'LIMIT 30'
+                ).fetchall()
+                vals = [str(r[0]).strip() for r in sample if r[0]]
+
+                if not vals:
+                    continue
+
+                avg_len = sum(len(v) for v in vals) / len(vals)
+
+                # Colonnes avec valeurs très courtes → codes, pas des noms
+                if avg_len < 4:
+                    continue
+
+                # ratio_unique proche de 1 → chaque ligne a un nom distinct
+                ratio_unique = distinct_count / max(non_null, 1)
+
+                # Score final
+                score = bonus * ratio_unique * avg_len * math.log1p(distinct_count)
+
+                logger.debug(
+                    "  get_primary_column[%s] col=%s bonus=%.1f ratio=%.2f "
+                    "avg_len=%.1f distinct=%d score=%.1f",
+                    table, col, bonus, ratio_unique, avg_len, distinct_count, score,
+                )
+
+                if score > best_score:
+                    best_score = score
+                    best_col   = col
+
+            except Exception as e:
+                logger.debug("  get_primary_column: erreur col %s: %s", col, e)
+                continue
+
+        # ── Passe 3 : fallback ───────────────────────────────────────────────
+        if best_col is None and user_cols:
+            best_col = user_cols[0]
+
+        logger.info("get_primary_column(%s) → %s", table, best_col)
+        return best_col
+
     def close(self) -> None:
         try:
             self.conn.close()
