@@ -476,11 +476,9 @@ class RAGPipeline:
                         unique_names.append(name)
 
                 # Validation LLM par batches
-                validated = self._llm_validate_batch(
-                    question=question,
-                    items=unique_names,
-                    batch_size=self.config.validation_batch_size,
-                ) if getattr(self.config, "validation_enabled", True) else unique_names
+                # Pas de validation LLM : DuckDB retourne déjà les bonnes données
+                # La validation filtrait trop et perdait des résultats valides
+                validated = unique_names
 
                 # Construction de la réponse
                 prefix_lines = []
