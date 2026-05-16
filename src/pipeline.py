@@ -27,28 +27,53 @@ from .structured import StructuredQueryEngine
 
 # ── Prompts optimisés pour petit modèle (qwen2.5:0.5b) ──────────────────────
 
-_SYSTEM_PROMPT = """Tu es un assistant RH. Réponds en français uniquement à partir du contexte fourni.
-Chaque entrée du contexte est préfixée par sa source entre crochets (ex: [DIRECTION], [DEPARTEMENT], [SERVICE], [POSTE]).
-Utilise UNIQUEMENT les données de la source pertinente à la question. Ignore les entrées provenant de sources non pertinentes.
-Si l'information n'est pas dans le contexte, réponds : "Aucune réponse ."
-N'invente JAMAIS de données. Cite uniquement ce qui apparaît explicitement dans le contexte."""
+# ── Prompts optimisés — précision maximale, zéro hallucination ──────────────
 
-_GENERATION_PROMPT = """Contexte:
+_SYSTEM_PROMPT = """Tu es un assistant RH expert et rigoureux. Tu réponds UNIQUEMENT en français.
+
+RÈGLES ABSOLUES — toute violation est une erreur grave :
+1. UTILISE UNIQUEMENT le contexte fourni entre les balises <contexte>. N'utilise jamais tes connaissances internes.
+2. Chaque bloc du contexte est étiqueté [SOURCE]. Tu dois IDENTIFIER quelle source est pertinente pour la question AVANT de répondre.
+3. Si plusieurs sources sont présentes, utilise UNIQUEMENT celle(s) dont le contenu correspond directement à la question. Ignore les autres.
+4. Si la réponse n'est pas explicitement écrite dans le contexte → réponds exactement : "Information non disponible dans les documents fournis."
+5. N'INVENTE PAS, ne déduis pas, ne complète pas par logique. Cite seulement ce qui est écrit.
+6. Ne mentionne jamais des données issues d'une source non pertinente pour la question posée.
+7. Si la question porte sur une entité précise (une personne, un département, un poste), filtre strictement sur cette entité dans le contexte."""
+
+_GENERATION_PROMPT = """<contexte>
 {context}
+</contexte>
 
-{history}Question: {question}
+{history}
+<question>
+{question}
+</question>
 
-Réponse:"""
+Instructions de réponse :
+- Identifie d'abord quelle(s) source(s) dans le contexte est (sont) directement pertinente(s) pour cette question.
+- Utilise UNIQUEMENT les données de cette/ces source(s).
+- Sois précis, concis, et factuel.
+- Si l'information n'est pas dans le contexte, dis-le clairement sans improviser.
 
-_GENERATION_PROMPT_LIST = """Contexte:
+Réponse :"""
+
+_GENERATION_PROMPT_LIST = """<contexte>
 {context}
+</contexte>
 
-{history}Question: {question}
+{history}
+<question>
+{question}
+</question>
 
-IMPORTANT: La question demande une liste. Tu dois citer TOUS les éléments présents dans le contexte, sans en omettre.
-Formatte la réponse sous forme de liste numérotée. Ne résume pas, ne regroupe pas, liste chaque élément.
+Instructions de réponse :
+- Identifie la source pertinente pour cette question de liste.
+- Liste TOUS les éléments présents dans cette source, sans en omettre aucun.
+- Ne fusionne pas, ne résume pas, ne regroupe pas.
+- Format obligatoire : liste numérotée, un élément par ligne.
+- N'ajoute aucun élément qui ne figure pas explicitement dans le contexte.
 
-Réponse:"""
+Réponse :"""
 
 
 
