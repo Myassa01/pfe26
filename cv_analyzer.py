@@ -3,6 +3,13 @@ Module d'analyse de CV via pipeline RAG.
 Extraction CV + recherche exigences + analyse LLM.
 Les postes recommandés sont récupérés DYNAMIQUEMENT depuis le référentiel GTP (PDF)
 via le pipeline RAG — aucune liste hardcodée.
+
+CORRECTIONS APPLIQUÉES :
+  - Anti-hallucination : le LLM ne peut plus inventer de compétences absentes du CV
+  - cv_text étendu à 6000 chars (évite la troncature)
+  - System prompt renforcé pour l'analyse individuelle et le classement
+  - Règle stricte : profil hors domaine = score 0-2/10 sans exception
+  - temperature=0.0 explicitement forcé partout
 """
 
 import io
@@ -127,12 +134,29 @@ def retrieve_postes_gtp(pipeline) -> str:
 
 # ─────────────────────────────────────────────────────────────
 # Prompt analyse INDIVIDUELLE
+# FIX : ajout règles anti-hallucination + hors domaine strict
 # ─────────────────────────────────────────────────────────────
 
 ANALYSIS_PROMPT = """
 Tu es un expert RH senior chez GTP (Groupe Travaux Pétroliers), spécialisé dans
 l'évaluation et le classement de profils techniques et ingénierie dans le secteur
 pétrolier et de la construction industrielle.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RÈGLES FONDAMENTALES — À RESPECTER ABSOLUMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚫 INTERDIT — Ne JAMAIS :
+  - Attribuer au candidat des compétences NON mentionnées dans son CV
+  - Inventer des formations, diplômes ou expériences absents du CV fourni
+  - Supposer qu'un candidat maîtrise un outil ou une norme parce que le poste l'exige
+  - Confondre les exigences du POSTE avec les compétences réelles du CANDIDAT
+  - Copier les exigences du poste dans la section "Compétences Techniques" du candidat
+
+✅ OBLIGATOIRE :
+  - Analyser UNIQUEMENT ce qui est écrit textuellement dans le CV fourni
+  - Si une compétence requise est absente du CV → la signaler comme MANQUANTE
+  - Si le domaine du CV est totalement différent du poste → score 0-2/10, niveau HORS DOMAINE
+  - Distinguer clairement : "le poste exige X" ≠ "le candidat possède X"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 MISSION
@@ -142,10 +166,11 @@ Poste cible évalué : "{poste}"
 Tu dois :
 1. Analyser ce CV par rapport au poste "{poste}"
 2. Donner un score de correspondance STRICT selon le barème ci-dessous
-3. Identifier le poste GTP officiel qui correspond le mieux au profil réel du candidat
+3. Identifier le poste GTP officiel qui correspond le mieux au profil RÉEL du candidat
 4. Si le poste du CV est SUPÉRIEUR au poste cible : expliquer pourquoi ce profil
    reste pertinent mais surdimensionné
 5. Si le poste du CV est INFÉRIEUR au poste cible : expliquer le manque
+6. Si le domaine est totalement différent : classer HORS DOMAINE, score 0-2/10
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EXIGENCES DU POSTE (depuis référentiel GTP)
@@ -153,8 +178,10 @@ EXIGENCES DU POSTE (depuis référentiel GTP)
 {job_context}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CV DU CANDIDAT
+CV DU CANDIDAT — SOURCE UNIQUE D'INFORMATION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ Analyse UNIQUEMENT le texte ci-dessous. Ne rien ajouter, ne rien supposer.
+
 {cv_text}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -187,9 +214,11 @@ HORS DOMAINE :
 RÈGLES ABSOLUES :
 ✗ La motivation ou qualités personnelles seules ne font JAMAIS monter le score
 ✗ Diplôme non pertinent pour le domaine = score max 3/10
-✗ Zéro expérience industrie pétrolière/construction = pénalité obligatoire (-1 à -2)
+✗ Zéro expérience dans le domaine du poste = score max 3/10
+✗ Domaine totalement différent (ex: soudeur pour poste Finance) = score 0-2/10 OBLIGATOIRE
 ✗ Un profil surdimensionné NE PEUT PAS dépasser 7/10 pour un poste inférieur
-✓ Expérience GTP ou Sonatrach directe = bonus +1 (dans la limite de 10)
+✗ NE PAS attribuer les exigences du poste comme compétences du candidat
+✓ Expérience GTP ou Sonatrach directe dans le MÊME domaine = bonus +1 (max 10)
 ✓ Certifications spécifiques au poste = bonus +0.5 par certification pertinente
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -202,19 +231,19 @@ Réponds STRICTEMENT en français avec ce format exact, sans déviation :
 **NIVEAU DU PROFIL PAR RAPPORT AU POSTE CIBLE**
 [EXACT / SUPÉRIEUR / INFÉRIEUR / HORS DOMAINE] — justification en 1 phrase
 
-**POINTS FORTS**
-- [point fort 1, lié directement aux exigences du poste]
+**POINTS FORTS** (uniquement ce qui est présent dans le CV)
+- [point fort 1, lié directement aux exigences du poste ET présent dans le CV]
 - [point fort 2]
-- [point fort 3 minimum]
+- [point fort 3 minimum, ou "Aucun point fort pertinent pour ce poste" si hors domaine]
 
-**POINTS FAIBLES / MANQUANTS**
-- [manque 1 par rapport aux exigences du poste]
+**POINTS FAIBLES / MANQUANTS** (compétences requises absentes du CV)
+- [compétence requise par le poste mais ABSENTE du CV du candidat]
 - [manque 2]
 
 **ADÉQUATION HIÉRARCHIQUE**
-Poste actuel/équivalent du candidat : [poste GTP le plus proche du profil réel, issu du référentiel]
+Poste actuel/équivalent du candidat : [poste GTP le plus proche du profil RÉEL, issu du référentiel]
 Poste cible demandé              : {poste}
-Écart                            : [Exact / +N niveau(x) au-dessus / -N niveau(x) en dessous]
+Écart                            : [Exact / +N niveau(x) au-dessus / -N niveau(x) en dessous / Hors domaine]
 
 **RECOMMANDATION FINALE**
 [Recommandé / À étudier / Non recommandé] — justification courte et concrète.
@@ -228,11 +257,43 @@ points à vérifier en entretien, etc.]
 
 
 # ─────────────────────────────────────────────────────────────
+# System prompt analyse individuelle — FIX anti-hallucination
+# ─────────────────────────────────────────────────────────────
+
+ANALYSIS_SYSTEM_PROMPT = (
+    "Tu es un expert RH senior chez GTP. Réponds uniquement en français. "
+    "RÈGLE N°1 ABSOLUE : Tu analyses UNIQUEMENT les informations présentes dans le CV fourni. "
+    "Tu ne dois JAMAIS inventer, supposer ou inférer des compétences non mentionnées explicitement dans le CV. "
+    "RÈGLE N°2 : Les exigences du poste décrivent ce que le poste REQUIERT, "
+    "pas ce que le candidat POSSÈDE. Ne pas confondre les deux. "
+    "RÈGLE N°3 : Un candidat dont le domaine est totalement différent du poste cible "
+    "(ex: soudeur évalué pour un poste Finance) DOIT recevoir un score de 0 à 2/10 "
+    "et le niveau HORS DOMAINE, sans exception. "
+    "RÈGLE N°4 : Le POSTE RECOMMANDÉ doit être EXACTEMENT un intitulé issu du référentiel "
+    "GTP fourni dans le contexte. Ne jamais inventer un poste."
+)
+
+
+# ─────────────────────────────────────────────────────────────
 # Prompt CLASSEMENT multi-CVs
 # ─────────────────────────────────────────────────────────────
 
 RANKING_PROMPT = """
 Tu es un expert RH senior chez GTP (Groupe Travaux Pétroliers).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RÈGLES FONDAMENTALES — À RESPECTER ABSOLUMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚫 INTERDIT :
+  - Modifier les scores individuels déjà attribués
+  - Attribuer des compétences non mentionnées dans les analyses individuelles
+  - Classer un profil HORS DOMAINE autrement qu'en dernière position ou éliminé
+  - Ignorer le niveau de profil lors du classement (EXACT > INFÉRIEUR > SUPÉRIEUR)
+
+✅ OBLIGATOIRE :
+  - Utiliser UNIQUEMENT les informations des analyses individuelles fournies ci-dessous
+  - Appliquer strictement la priorité de classement hiérarchique
+  - Un profil HORS DOMAINE est toujours classé en dernier et marqué "Non recommandé"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 MISSION : CLASSEMENT DE CANDIDATS
@@ -252,12 +313,12 @@ PRIORITÉ DE CLASSEMENT (dans l'ordre strict) :
 3. SUPÉRIEUR +1 : légèrement surdimensionné (+1 niveau), mobilisable → 3ème
 4. INFÉRIEUR -2 : deux niveaux en dessous → après
 5. SUPÉRIEUR +2 : deux niveaux ou plus au-dessus (sur-qualification forte) → en dernier
-6. HORS DOMAINE : éliminé du classement, mention explicite
+6. HORS DOMAINE : éliminé du classement, mention explicite, toujours en dernière position
 
 À SCORE ÉGAL, départage par ordre de priorité :
-  a) Expérience directe GTP ou Sonatrach (bonus)
+  a) Expérience directe GTP ou Sonatrach dans le MÊME domaine (bonus)
   b) Nombre d'années d'expérience dans le domaine exact du poste
-  c) Certifications pertinentes et valides
+  c) Certifications pertinentes et valides pour le poste
   d) Niveau de diplôme le plus adapté au poste
 
 RAPPEL IMPORTANT :
@@ -265,7 +326,8 @@ RAPPEL IMPORTANT :
   un profil EXACT, même si son score brut est identique.
 - Un profil INFÉRIEUR avec fort potentiel d'évolution est préféré à un profil
   SUPÉRIEUR surdimensionné.
-- Ne jamais classer en tête un profil hors domaine, quelle que soit sa qualité générale.
+- Un profil HORS DOMAINE est TOUJOURS classé en dernier, quelle que soit sa qualité générale.
+- Ne jamais remonter un profil HORS DOMAINE même s'il a des qualités générales.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FORMAT DE RÉPONSE OBLIGATOIRE
@@ -276,8 +338,8 @@ Réponds STRICTEMENT en français avec ce format exact :
 
 | Rang | Candidat | Score | Niveau profil     | Justification courte            |
 |------|----------|-------|-------------------|---------------------------------|
-|  1   | [Nom]    | [X/10]| [EXACT/SUP/INF]   | [1 phrase max]                  |
-|  2   | [Nom]    | [X/10]| [EXACT/SUP/INF]   | [1 phrase max]                  |
+|  1   | [Nom]    | [X/10]| [EXACT/SUP/INF/HORS DOMAINE] | [1 phrase max]     |
+|  2   | [Nom]    | [X/10]| [EXACT/SUP/INF/HORS DOMAINE] | [1 phrase max]     |
 | ...  | ...      | ...   | ...               | ...                             |
 
 **CANDIDAT RECOMMANDÉ EN PRIORITÉ**
@@ -286,16 +348,32 @@ choix pour le poste "{poste}"]
 
 **CANDIDATS À ÉTUDIER**
 - [Nom] : [raison courte — potentiel, lacunes comblables, etc.]
-- ...
+- ... (ou "Aucun" si tous sont recommandés ou non recommandés)
 
 **CANDIDATS NON RECOMMANDÉS**
 - [Nom] : [raison courte — hors domaine, trop surdimensionné, manques rédhibitoires]
-- ...
+- ... (ou "Aucun" si tous les candidats sont recommandés)
 
 **NOTE RH GLOBALE**
 [Observation sur le vivier : qualité globale des candidats, adéquation au poste,
 recommandation si aucun profil n'est idéal (ex: élargir la recherche, former en interne)]
 """
+
+
+# ─────────────────────────────────────────────────────────────
+# System prompt classement — FIX anti-confusion profils
+# ─────────────────────────────────────────────────────────────
+
+RANKING_SYSTEM_PROMPT = (
+    "Tu es un expert RH senior chez GTP. Réponds uniquement en français. "
+    "RÈGLE N°1 : Applique strictement les règles de classement hiérarchique fournies. "
+    "Un profil EXACT prime toujours sur un profil SUPÉRIEUR ou INFÉRIEUR, même à score égal. "
+    "RÈGLE N°2 : Un profil HORS DOMAINE est TOUJOURS classé en dernière position "
+    "et marqué 'Non recommandé', sans exception, même s'il a un score individuel élevé. "
+    "RÈGLE N°3 : Ne pas modifier les scores individuels déjà attribués. "
+    "RÈGLE N°4 : Utilise UNIQUEMENT les informations des analyses individuelles fournies. "
+    "Ne pas inventer ni attribuer de nouvelles compétences aux candidats."
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -305,13 +383,14 @@ recommandation si aucun profil n'est idéal (ex: élargir la recherche, former e
 def build_analysis_prompt(cv_text: str, poste: str, job_context: str,
                           postes_gtp_context: str) -> str:
     """Construit le prompt d'analyse individuelle."""
+    # FIX : cv_text étendu à 6000 chars pour éviter troncature
     return ANALYSIS_PROMPT.format(
         poste=poste or "poste généraliste GTP",
         job_context=job_context or (
             "Aucun document spécifique trouvé. "
             "Utiliser le barème strict et le bon sens RH."
         ),
-        cv_text=cv_text[:4000],
+        cv_text=cv_text[:6000],  # FIX : était 4000, augmenté à 6000
         postes_gtp_context=postes_gtp_context or (
             "Référentiel des postes GTP non disponible. "
             "Utiliser les intitulés standards du secteur pétrolier algérien."
@@ -416,7 +495,7 @@ def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
     # ── 2. Récupération des postes GTP depuis le référentiel PDF ─
     postes_gtp_context = retrieve_postes_gtp(pipeline)
 
-    # ── 3. Construction et envoi du prompt ────────────────────────
+    # ── 3. Construction du prompt ─────────────────────────────────
     prompt = build_analysis_prompt(
         cv_text=cv_text,
         poste=search_poste,
@@ -424,15 +503,12 @@ def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
         postes_gtp_context=postes_gtp_context,
     )
 
+    # ── 4. Appel LLM — FIX : system prompt renforcé + temperature=0.0 forcé ──
     try:
         answer = pipeline.llm.generate(
             prompt=prompt,
-            system=(
-                "Tu es un expert RH senior chez GTP. Réponds uniquement en français. "
-                "Le POSTE RECOMMANDÉ doit être EXACTEMENT un intitulé issu du référentiel "
-                "GTP fourni dans le contexte. Ne jamais inventer un poste."
-            ),
-            temperature=0.0,
+            system=ANALYSIS_SYSTEM_PROMPT,  # FIX : system prompt anti-hallucination
+            temperature=0.0,                # FIX : explicitement forcé à 0.0
             max_tokens=pipeline.config.llm_max_tokens_long,
         )
     except Exception as e:
@@ -474,16 +550,12 @@ def rank_cvs_with_pipeline(pipeline, analyses: list[dict], poste: str) -> dict:
 
     prompt = build_ranking_prompt(poste=poste, analyses=analyses)
 
+    # FIX : system prompt renforcé + temperature=0.0 explicitement forcé
     try:
         answer = pipeline.llm.generate(
             prompt=prompt,
-            system=(
-                "Tu es un expert RH senior chez GTP. Réponds uniquement en français. "
-                "Applique strictement les règles de classement hiérarchique fournies. "
-                "Un profil EXACT prime toujours sur un profil SUPÉRIEUR ou INFÉRIEUR, "
-                "même à score égal."
-            ),
-            temperature=0.0,
+            system=RANKING_SYSTEM_PROMPT,   # FIX : system prompt anti-confusion
+            temperature=0.0,                # FIX : explicitement forcé à 0.0
             max_tokens=pipeline.config.llm_max_tokens_long,
         )
     except Exception as e:
