@@ -1,10 +1,17 @@
 """
 Module d'analyse de CV via pipeline RAG.
 Extraction CV + recherche exigences + analyse LLM.
+
+Fixes v2:
+- POSTE RECOMMANDÉ contraint à la liste GTP réelle (extraite du référentiel RAG)
+- Score STRICTEMENT lié au poste demandé (pas au profil général)
+- Double recherche RAG : exigences du poste + postes GTP compatibles avec le CV
+- Validation post-LLM du titre recommandé contre la liste GTP
 """
 
 import io
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -61,10 +68,8 @@ def extract_cv_text(content: bytes, filename: str) -> str:
 
     if name.endswith(".pdf"):
         return extract_text_from_pdf(content)
-
     elif name.endswith(".docx"):
         return extract_text_from_docx(content)
-
     elif name.endswith(".txt"):
         return content.decode("utf-8", errors="replace").strip()
 
@@ -75,62 +80,127 @@ def extract_cv_text(content: bytes, filename: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# Extraction des titres de postes GTP depuis les chunks RAG
+# ─────────────────────────────────────────────────────────────
+
+def extract_gtp_post_titles(chunks: list) -> list[str]:
+    """
+    Extrait les titres de postes GTP valides depuis les chunks RAG.
+    Cherche le pattern "Poste de base: XYZ" présent dans le référentiel.
+    """
+    titles = []
+    seen = set()
+    for chunk in chunks:
+        content = chunk.get("content", "")
+        matches = re.findall(r"Poste de base:\s*([^\n|]+)", content, re.IGNORECASE)
+        for m in matches:
+            title = m.strip().rstrip(".")
+            if title and len(title) > 3 and title.lower() not in seen:
+                seen.add(title.lower())
+                titles.append(title)
+    return titles
+
+
+def find_closest_gtp_post(candidate: str, valid_titles: list[str]) -> Optional[str]:
+    """
+    Trouve le titre GTP le plus proche d'une chaîne proposée par le LLM.
+    Utilise une correspondance simple par tokens.
+    """
+    if not candidate or not valid_titles:
+        return None
+
+    candidate_tokens = set(re.findall(r"\w+", candidate.lower()))
+
+    best_title = None
+    best_score = 0
+    for title in valid_titles:
+        title_tokens = set(re.findall(r"\w+", title.lower()))
+        overlap = len(candidate_tokens & title_tokens)
+        # Score normalisé pour éviter de favoriser les titres très longs
+        score = overlap / max(len(candidate_tokens), 1)
+        if score > best_score:
+            best_score = score
+            best_title = title
+
+    # On accepte uniquement si la correspondance est raisonnable (≥ 1 token commun)
+    return best_title if best_score > 0 else None
+
+
+# ─────────────────────────────────────────────────────────────
 # Prompt analyse
 # ─────────────────────────────────────────────────────────────
 
 ANALYSIS_PROMPT = """
-Tu es un expert RH chez Sonatrach.
+Tu es un expert RH chez GTP (Groupe Travaux Pétroliers).
 
-Analyse le CV ci-dessous par rapport au poste "{poste}"
-en utilisant les exigences récupérées depuis la base documentaire interne.
+━━━ MISSION ━━━
+Évalue le CV ci-dessous UNIQUEMENT par rapport au poste "{poste}".
+Ne note pas le candidat en général — note sa correspondance précise à CE poste.
 
-=== EXIGENCES DU POSTE ===
+═══ EXIGENCES DU POSTE (référentiel GTP) ═══
 {job_context}
 
-=== CV DU CANDIDAT ===
+═══ CV DU CANDIDAT ═══
 {cv_text}
 
-=== BARÈME STRICT ===
-- 0-2 : Profil hors domaine
-- 3-4 : Faible adéquation
-- 5-6 : Adéquation moyenne
-- 7-8 : Bonne adéquation
-- 9-10 : Excellente adéquation
+═══ LISTE DES POSTES GTP VALIDES ═══
+(Tu DOIS choisir le POSTE RECOMMANDÉ uniquement parmi ces titres exacts)
+{valid_posts_list}
 
-RÈGLES :
-- Formation non technique pour poste technique => score max 3
-- Sans expérience industrielle/pétrole/gaz => pénalité
-- Qualités personnelles seules ≠ bon score
+━━━ BARÈME — correspondance avec "{poste}" ━━━
+• 0–2  : Profil totalement hors domaine
+• 3–4  : Faible adéquation — formation ou expérience inadaptée
+• 5–6  : Adéquation partielle — quelques compétences mais lacunes importantes
+• 7–8  : Bonne adéquation — répond aux critères principaux
+• 9–10 : Excellente adéquation — profil idéal pour ce poste
 
-Réponds STRICTEMENT en français :
+━━━ RÈGLES DE SCORING STRICTES ━━━
+1. Le score mesure uniquement la FIT au poste "{poste}" — un profil brillant mais inadapté à ce poste score bas.
+2. Formation non technique pour un poste technique → score MAXIMUM 3.
+3. Aucune expérience dans le secteur pétrolier/gaz/industriel pour un poste technique → pénalité -2.
+4. Qualités personnelles seules (sans compétences techniques correspondantes) → score MAXIMUM 4.
+5. Expérience directement dans le domaine du poste → bonus +1 (jusqu'à 10 max).
 
-**SCORE DE CORRESPONDANCE** : [0-10]/10
+━━━ FORMAT DE RÉPONSE (OBLIGATOIRE, en français) ━━━
+
+**SCORE DE CORRESPONDANCE** : [chiffre 0-10]/10
 
 **POINTS FORTS**
-- ...
+- [liste des atouts du candidat par rapport au poste "{poste}"]
 
 **POINTS FAIBLES / MANQUANTS**
-- ...
+- [lacunes par rapport aux exigences du poste "{poste}"]
 
 **RECOMMANDATION FINALE**
-Recommandé / À étudier / Non recommandé avec justification.
+[Recommandé / À étudier / Non recommandé] — justification courte en rapport avec le poste "{poste}".
 
 **REMARQUES**
-Observations supplémentaires.
+[Observations utiles pour le recruteur]
 
-**POSTE RECOMMANDÉ** : [intitulé du poste Sonatrach le PLUS ADAPTÉ au profil réel du candidat, 
-indépendamment du poste visé — basé uniquement sur sa formation et son expérience]
+**POSTE RECOMMANDÉ** : [OBLIGATOIRE — choisir UN titre EXACT de la liste "POSTES GTP VALIDES" ci-dessus, celui qui correspond le mieux au profil réel du candidat — indépendamment du poste visé]
 """
 
 
-def build_analysis_prompt(cv_text: str, poste: str, job_context: str) -> str:
+def build_analysis_prompt(
+    cv_text: str,
+    poste: str,
+    job_context: str,
+    valid_gtp_posts: list[str],
+) -> str:
+    """Construit le prompt final avec la liste des postes GTP valides."""
+    if valid_gtp_posts:
+        posts_block = "\n".join(f"  • {p}" for p in valid_gtp_posts[:30])
+    else:
+        posts_block = "  (Aucun poste trouvé dans le référentiel — utilisez votre jugement RH)"
+
     return ANALYSIS_PROMPT.format(
-        poste=poste or "poste généraliste Sonatrach",
+        poste=poste or "poste généraliste GTP",
         job_context=job_context or (
-            "Aucun document spécifique trouvé. "
-            "Utiliser bonnes pratiques RH générales."
+            "Aucun document spécifique trouvé dans le référentiel. "
+            "Appliquer les bonnes pratiques RH générales."
         ),
         cv_text=cv_text[:4000],
+        valid_posts_list=posts_block,
     )
 
 
@@ -144,135 +214,180 @@ def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
 
     search_poste = poste.strip() if poste else ""
 
+    # ── RECHERCHE 1 : exigences du poste demandé ──────────────────────────
     if search_poste:
-        search_query = f"exigences compétences diplômes requis poste {search_poste}"
+        req_query = (
+            f"exigences compétences diplômes formation requise poste {search_poste}"
+        )
     else:
         cv_hint = " ".join(cv_text[:600].split())[:300]
-        search_query = f"poste Sonatrach requis diplôme expérience {cv_hint}"
+        req_query = f"poste GTP requis diplôme expérience compétences {cv_hint}"
+
+    # ── RECHERCHE 2 : postes GTP correspondant au profil du CV ───────────
+    cv_summary = " ".join(cv_text[:800].split())[:400]
+    profile_query = (
+        f"Poste de base référentiel GTP compatible profil {cv_summary}"
+    )
+
+    job_context = ""
+    sources = []
+    valid_gtp_posts: list[str] = []
 
     try:
-        query_embedding = pipeline.embedder.embed_single(search_query)
-
-        dense_results = pipeline.vector_store.search(
-            query_embedding,
-            k=pipeline.config.top_k_dense,
-        )
-
-        sparse_results = []
-        if pipeline.bm25:
-            sparse_results = pipeline.bm25.search(
-                search_query,
-                k=pipeline.config.top_k_sparse,
-            )
-
         from src.retrieval.hybrid_search import reciprocal_rank_fusion
-        fused = reciprocal_rank_fusion(
-            dense_results,
-            sparse_results,
-            k=pipeline.config.rrf_k,
-        )
 
-        top_chunks = fused[:pipeline.config.top_k_after_rerank]
+        # — Recherche 1 : job requirements —
+        req_emb = pipeline.embedder.embed_single(req_query)
+        req_dense = pipeline.vector_store.search(req_emb, k=pipeline.config.top_k_dense)
+        req_sparse = pipeline.bm25.search(req_query, k=pipeline.config.top_k_sparse) if pipeline.bm25 else []
+        req_fused = reciprocal_rank_fusion(req_dense, req_sparse, k=pipeline.config.rrf_k)
+        req_chunks = req_fused[:pipeline.config.top_k_after_rerank]
 
-        if pipeline.reranker and top_chunks:
-            pairs = [(search_query, c["content"]) for c in top_chunks]
+        if pipeline.reranker and req_chunks:
+            pairs = [(req_query, c["content"]) for c in req_chunks]
             scores = pipeline.reranker.model.predict(pairs)
-
-            for c, s in zip(top_chunks, scores):
+            for c, s in zip(req_chunks, scores):
                 c["rerank_score"] = float(s)
-
-            top_chunks = sorted(
-                top_chunks,
-                key=lambda x: x.get("rerank_score", 0),
-                reverse=True,
-            )
+            req_chunks = sorted(req_chunks, key=lambda x: x.get("rerank_score", 0), reverse=True)
 
         job_context = "\n\n---\n\n".join(
             f"[{c['metadata'].get('source', '?')}]\n{c['content']}"
-            for c in top_chunks
+            for c in req_chunks
         )
+        sources = list({c["metadata"].get("source", "?") for c in req_chunks})
 
-        sources = list({
-            c["metadata"].get("source", "?")
-            for c in top_chunks
-        })
+        # — Recherche 2 : postes GTP valides pour ce profil —
+        prof_emb = pipeline.embedder.embed_single(profile_query)
+        prof_dense = pipeline.vector_store.search(prof_emb, k=10)
+        prof_sparse = pipeline.bm25.search(profile_query, k=10) if pipeline.bm25 else []
+        prof_fused = reciprocal_rank_fusion(prof_dense, prof_sparse, k=pipeline.config.rrf_k)
+        prof_chunks = prof_fused[:15]
+
+        # Combiner les chunks des deux recherches pour extraire les titres GTP
+        all_chunks = req_chunks + prof_chunks
+        valid_gtp_posts = extract_gtp_post_titles(all_chunks)
+
+        logger.info("Postes GTP extraits pour recommandation: %d", len(valid_gtp_posts))
 
     except Exception as e:
         logger.warning("Erreur recherche RAG : %s", e)
-        job_context = ""
-        sources = []
 
-    # Prompt final
+    # ── Construction du prompt ────────────────────────────────────────────
     prompt = build_analysis_prompt(
         cv_text=cv_text,
         poste=search_poste,
         job_context=job_context,
+        valid_gtp_posts=valid_gtp_posts,
     )
 
+    # ── Appel LLM ─────────────────────────────────────────────────────────
     try:
         answer = pipeline.llm.generate(
             prompt=prompt,
-            system="Tu es un expert RH chez Sonatrach. Réponds uniquement en français.",
+            system=(
+                "Tu es un expert RH chez GTP. "
+                "Réponds UNIQUEMENT en français. "
+                "Le POSTE RECOMMANDÉ doit être un titre EXACT de la liste fournie."
+            ),
             temperature=0.0,
             max_tokens=pipeline.config.llm_max_tokens_long,
         )
-
     except Exception as e:
         raise RuntimeError(f"Erreur analyse LLM : {e}")
 
+    # ── Parsing des résultats ─────────────────────────────────────────────
     score = _extract_score(answer)
-    recommended_poste = _extract_recommended_poste(answer)
+    recommended_poste_raw = _extract_recommended_poste(answer)
 
-    
+    # Validation : le poste recommandé doit exister dans la liste GTP
+    recommended_poste = _validate_recommended_poste(
+        recommended_poste_raw, valid_gtp_posts
+    )
+
     elapsed = round(time.time() - t0, 2)
+    logger.info(
+        "Analyse terminée en %.2fs — score=%s — poste_rec=%s",
+        elapsed, score, recommended_poste,
+    )
 
     return {
-    "answer": answer,
-    "score": score,
-    "poste": search_poste or recommended_poste or "Non précisé",
-    "recommended_poste": recommended_poste or "Non précisé",  # ← ajouter
-    "sources": sources,
-    "elapsed_seconds": elapsed,
-}
+        "answer": answer,
+        "score": score,
+        "poste": search_poste or recommended_poste or "Non précisé",
+        "recommended_poste": recommended_poste or "Non précisé",
+        "sources": sources,
+        "elapsed_seconds": elapsed,
+        "valid_gtp_posts_count": len(valid_gtp_posts),
+    }
+
 
 # ─────────────────────────────────────────────────────────────
 # Parsers
 # ─────────────────────────────────────────────────────────────
 
 def _extract_score(text: str) -> Optional[int]:
-    import re
-
     patterns = [
         r"SCORE[^:\n]*:\s*\**\s*(\d{1,2})\s*\**\s*/\s*10",
         r"SCORE[^:\n]*:\s*\[?(\d{1,2})\]?\s*/\s*10",
         r"\*\*(\d{1,2})\*\*\s*/\s*10",
         r"(\d{1,2})\s*/\s*10",
     ]
-
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             val = int(m.group(1))
             if 0 <= val <= 10:
                 return val
-
     return None
 
 
 def _extract_recommended_poste(text: str) -> Optional[str]:
-    import re
     patterns = [
-        # Inline avec deux-points : **POSTE RECOMMANDÉ** : Ingénieur forage
+        # Inline : **POSTE RECOMMANDÉ** : Ingénieur Forage
         r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*[:\-]\s*([^\n\[\]]+)",
-        # Ligne suivante : **POSTE RECOMMANDÉ**\nIngénieur forage
+        # Ligne suivante
         r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*\n+\s*([^\n\[\]\*]+)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
         if m:
             value = m.group(1).strip().strip("*•[] \t")
-            # Rejeter si c'est le texte de template (crochets, trop court)
             if value and "[" not in value and len(value) > 3:
                 return value
-   
     return None
+
+
+def _validate_recommended_poste(
+    candidate: Optional[str],
+    valid_titles: list[str],
+) -> Optional[str]:
+    """
+    Vérifie que le poste recommandé par le LLM existe dans le référentiel GTP.
+    Si non, cherche le titre le plus proche.
+    Si la liste est vide, retourne le candidat tel quel (fallback).
+    """
+    if not candidate:
+        return None
+
+    if not valid_titles:
+        # Pas de liste de référence disponible → on garde la réponse LLM
+        return candidate
+
+    # Correspondance exacte (insensible à la casse)
+    candidate_lower = candidate.strip().lower()
+    for title in valid_titles:
+        if title.lower() == candidate_lower:
+            return title  # Retourne la casse officielle du référentiel
+
+    # Correspondance partielle : le LLM a peut-être abrégé le titre
+    closest = find_closest_gtp_post(candidate, valid_titles)
+    if closest:
+        logger.info(
+            "Poste LLM '%s' → corrigé en titre GTP '%s'",
+            candidate, closest,
+        )
+        return closest
+
+    # Aucun match — on garde quand même la réponse LLM plutôt que "Non précisé"
+    logger.warning("Poste recommandé '%s' absent du référentiel GTP.", candidate)
+    return candidate
