@@ -521,7 +521,7 @@ class RAGPipeline:
             sql_warnings = list(self.structured.last_warnings)
             if qa_rows:
                 context = "\n".join(r["content"] for r in qa_rows[:20])
-                history_text = self._format_history(history) if history else ""
+                history_text = ""
                 prompt = _GENERATION_PROMPT.format(
                     context=context, question=question, history=history_text,
                 )
