@@ -49,7 +49,7 @@ _GENERATION_PROMPT = """<contexte>
 </question>
 
 INSTRUCTIONS STRICTES :
-- Si la question demande "qui est [NOM]" → réponds : "[NOM COMPLET] est [FONCTION] au [SERVICE/DEPARTEMENT]."
+- Si la question demande "qui est [NOM]" → réponds : "[NOM COMPLET] est [FONCTION]."
 - Si la question demande "qui est le [POSTE]" → réponds : "Le [POSTE] est [NOM COMPLET]."
 - Une seule phrase. Pas d'explication supplémentaire. Pas de bullet points.
 - Utilise UNIQUEMENT les données Excel (.xlsx), ignore les PDF.
