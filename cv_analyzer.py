@@ -132,67 +132,140 @@ def find_closest_gtp_post(candidate: str, valid_titles: list[str]) -> Optional[s
 
 ANALYSIS_PROMPT = """
 Tu es un expert RH senior chez GTP (Groupe Travaux Pétroliers).
-Ta mission : évaluer objectivement le CV ci-dessous pour le poste "{poste}".
 
-═══ EXIGENCES DU POSTE (référentiel GTP) ═══
+═══ EXIGENCES DU POSTE VISÉ (référentiel GTP) ═══
 {job_context}
 
 ═══ CV DU CANDIDAT ═══
 {cv_text}
 
 ═══ LISTE DES POSTES GTP VALIDES ═══
-(Le POSTE RECOMMANDÉ doit être un titre EXACT de cette liste)
 {valid_posts_list}
 
-━━━ ÉTAPE 1 — INVENTAIRE OBJECTIF (obligatoire avant de scorer) ━━━
-Avant de donner un score, réponds mentalement à ces questions :
-  A) Le CV contient-il une ou plusieurs expériences professionnelles listées ? OUI / NON
-  B) Ces expériences sont-elles dans le secteur pétrolier/industriel ? OUI / NON / SANS OBJET
-  C) La formation est-elle en adéquation avec le poste ? OUI / PARTIELLE / NON
-  D) Les compétences techniques requises pour "{poste}" sont-elles présentes ? OUI / PARTIELLE / NON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ÉTAPE 0 — DÉTECTION HORS DOMAINE (priorité absolue)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Avant tout, réponds : le profil du candidat (formation + expérience) 
+a-t-il un lien quelconque avec le domaine du poste "{poste}" ?
 
-━━━ ÉTAPE 2 — BARÈME STRICT ━━━
+Exemples de profils HORS DOMAINE :
+  - Poste technique (soudeur, ingénieur, technicien...) → candidat avec formation 
+    uniquement en économie, droit, lettres, sciences sociales
+  - Poste IT → candidat sans aucune compétence informatique
+  - Poste pétrolier/industriel → candidat dont toute l'expérience est dans la 
+    grande distribution, l'enseignement, la banque...
 
-Score de base selon l'expérience professionnelle (A) :
-  • Aucune expérience professionnelle mentionnée dans le CV → score de base MAXIMUM = 5/10
-  • Expérience présente mais hors domaine → score de base MAXIMUM = 6/10
-  • Expérience dans un domaine adjacent → score de base MAXIMUM = 7/10
-  • Expérience directement dans le domaine du poste → score de base MAXIMUM = 10/10
+→ Si HORS DOMAINE : SCORE = 0/10. Passe directement au FORMAT DE RÉPONSE.
+→ Si dans le domaine (même partiellement) : continue vers l'ÉTAPE 1.
 
-Modificateurs appliqués APRÈS le score de base :
-  +1 si formation parfaitement alignée avec le poste (dans la limite du maximum)
-  -1 si formation non technique pour un poste technique
-  +1 si compétences techniques requises toutes présentes
-  -1 si compétences clés du poste absentes du CV
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ÉTAPE 1 — LECTURE PRÉCISE DU CV
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Extrais avec précision depuis le CV :
+  A) Nombre total d'années d'expérience professionnelle (calcule à partir des dates)
+  B) Secteurs d'activité des expériences (pétrolier, industriel, tertiaire, autre)
+  C) Niveau de formation le plus élevé (BEP/CAP, Bac, Licence, Master, Ingénieur+)
+  D) Compétences techniques listées dans le CV
+  E) Certifications et habilitations présentes
+  F) Année d'obtention du diplôme le plus récent (pour départager les égalités)
 
-RÈGLE ABSOLUE :
-Un candidat sans AUCUNE expérience professionnelle ne peut jamais dépasser 5/10,
-peu importe la qualité de sa formation ou de ses projets académiques.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ÉTAPE 2 — NIVEAU DU CANDIDAT vs NIVEAU DU POSTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Compare le niveau RÉEL du candidat avec le niveau du poste "{poste}" :
 
-━━━ FORMAT DE RÉPONSE OBLIGATOIRE (en français) ━━━
+  SOUS-QUALIFIÉ : le candidat n'a pas encore le niveau requis pour ce poste
+  QUALIFIÉ      : le candidat correspond au niveau du poste
+  SUR-QUALIFIÉ  : le candidat dépasse le niveau du poste (plus d'expérience 
+                  ou formation supérieure → il mérite un poste plus élevé)
 
-**INVENTAIRE**
-- Expériences professionnelles : [OUI — liste / NON — aucune]
-- Secteur pétrolier/industriel : [OUI / NON / Partiel]
-- Formation adéquate : [OUI / PARTIELLE / NON]
-- Compétences techniques requises : [OUI / PARTIELLE / NON]
+RÈGLE ANTI-SURCLASSEMENT :
+  Si le candidat est SUR-QUALIFIÉ, son score pour CE poste est plafonné à 6/10
+  car il ne correspond pas au bon niveau — il faut lui proposer un poste supérieur.
+  Ne jamais donner 8, 9 ou 10 à un candidat sur-qualifié pour un poste bas.
 
-**SCORE DE CORRESPONDANCE** : [chiffre 0-10]/10
-(Justification du score en 1 ligne : score de base X + modificateurs)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ÉTAPE 3 — SCORING STRICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Score de base selon l'expérience (A) :
+  0 an  (aucune expérience)       → base 2/10
+  1-2 ans                         → base 3/10
+  3-5 ans                         → base 5/10
+  6-10 ans dans le domaine        → base 7/10
+  10+ ans dans le domaine exact   → base 8/10
+
+Modificateurs (+/-) APRÈS le score de base :
+  +1 : certifications/qualifications directement liées au poste
+  +1 : expérience chez GTP ou Sonatrach spécifiquement
+  +1 : formation exactement alignée avec le poste
+  -1 : formation non technique pour un poste technique
+  -1 : aucune compétence clé du poste présente dans le CV
+  -2 : candidat SUR-QUALIFIÉ (score plafonné à 6 après calcul)
+
+Score maximum selon le niveau :
+  Aucune expérience              → max 5/10
+  Hors domaine                   → 0/10 (fixe, non modifiable)
+  Sur-qualifié pour CE poste     → max 6/10
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ÉTAPE 4 — POSTE RECOMMANDÉ SELON LE PROFIL RÉEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Détermine le poste qui correspond AU PROFIL RÉEL du candidat,
+indépendamment du poste visé, en respectant ces règles :
+
+RÈGLES STRICTES :
+  1. Le poste recommandé doit être dans la liste GTP fournie.
+  2. Un candidat avec 0-2 ans d'expérience → poste de niveau DÉBUTANT/JUNIOR
+  3. Un candidat avec 3-7 ans d'expérience → poste de niveau CONFIRMÉ
+  4. Un candidat avec 8+ ans d'expérience → poste de niveau SENIOR ou CHEF D'ÉQUIPE
+     (JAMAIS Chef de Département, Directeur, Manager si < 15 ans d'expérience 
+      et aucune expérience de gestion documentée dans le CV)
+  5. Le domaine du poste recommandé doit correspondre au domaine du CV
+     (un comptable reste dans la finance/gestion, un soudeur dans le soudage/tuyauterie)
+  6. Si le profil est totalement hors domaine GTP → indiquer "Profil non compatible GTP"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ÉTAPE 5 — VALIDATION DU POSTE VISÉ PAR LE CANDIDAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Si un poste visé "{poste}" a été fourni, évalue si ce poste est 
+adapté au profil réel du candidat :
+
+  → ADAPTÉ    : le poste visé correspond bien au niveau et domaine du candidat
+  → TROP ÉLEVÉ : le candidat vise trop haut par rapport à son expérience
+  → TROP BAS   : le candidat est sur-qualifié pour le poste qu'il vise
+  → HORS DOMAINE : le poste visé n'a aucun rapport avec le profil du candidat
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORMAT DE RÉPONSE OBLIGATOIRE (en français)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**INVENTAIRE DU CV**
+- Expérience totale : [X années] — [secteur(s)]
+- Formation : [niveau + domaine]
+- Certifications clés : [liste ou "Aucune"]
+- Niveau candidat vs poste "{poste}" : [SOUS-QUALIFIÉ / QUALIFIÉ / SUR-QUALIFIÉ / HORS DOMAINE]
+- Année du diplôme le plus récent : [AAAA]
+
+**SCORE DE CORRESPONDANCE** : [0-10]/10
+(Score de base : X/10 | Modificateurs : [détail] | Résultat final : Y/10)
+
+**ADÉQUATION DU POSTE VISÉ**
+[ADAPTÉ / TROP ÉLEVÉ / TROP BAS / HORS DOMAINE] — [explication en 1-2 phrases]
 
 **POINTS FORTS**
-- [atouts du candidat par rapport au poste "{poste}"]
+- [liste des atouts réels du candidat]
 
 **POINTS FAIBLES / MANQUANTS**
-- [lacunes par rapport aux exigences du poste "{poste}"]
+- [lacunes par rapport aux exigences de "{poste}"]
 
 **RECOMMANDATION FINALE**
-[Recommandé / À étudier / Non recommandé] — justification courte.
+[Recommandé / À étudier / Non recommandé] — [justification courte]
 
 **REMARQUES**
-[Observations utiles pour le recruteur]
+[Observations utiles pour le recruteur, notamment si le candidat mérite un poste différent]
 
-**POSTE RECOMMANDÉ** : [titre EXACT de la liste ci-dessus]
+**POSTE RECOMMANDÉ** : [titre EXACT de la liste GTP — correspond au profil RÉEL du candidat]
 """
 
 
