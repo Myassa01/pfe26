@@ -131,11 +131,8 @@ def find_closest_gtp_post(candidate: str, valid_titles: list[str]) -> Optional[s
 # ─────────────────────────────────────────────────────────────
 
 ANALYSIS_PROMPT = """
-Tu es un expert RH chez GTP (Groupe Travaux Pétroliers).
-
-━━━ MISSION ━━━
-Évalue le CV ci-dessous UNIQUEMENT par rapport au poste "{poste}".
-Ne note pas le candidat en général — note sa correspondance précise à CE poste.
+Tu es un expert RH senior chez GTP (Groupe Travaux Pétroliers).
+Ta mission : évaluer objectivement le CV ci-dessous pour le poste "{poste}".
 
 ═══ EXIGENCES DU POSTE (référentiel GTP) ═══
 {job_context}
@@ -144,40 +141,58 @@ Ne note pas le candidat en général — note sa correspondance précise à CE p
 {cv_text}
 
 ═══ LISTE DES POSTES GTP VALIDES ═══
-(Tu DOIS choisir le POSTE RECOMMANDÉ uniquement parmi ces titres exacts)
+(Le POSTE RECOMMANDÉ doit être un titre EXACT de cette liste)
 {valid_posts_list}
 
-━━━ BARÈME — correspondance avec "{poste}" ━━━
-• 0–2  : Profil totalement hors domaine
-• 3–4  : Faible adéquation — formation ou expérience inadaptée
-• 5–6  : Adéquation partielle — quelques compétences mais lacunes importantes
-• 7–8  : Bonne adéquation — répond aux critères principaux
-• 9–10 : Excellente adéquation — profil idéal pour ce poste
+━━━ ÉTAPE 1 — INVENTAIRE OBJECTIF (obligatoire avant de scorer) ━━━
+Avant de donner un score, réponds mentalement à ces questions :
+  A) Le CV contient-il une ou plusieurs expériences professionnelles listées ? OUI / NON
+  B) Ces expériences sont-elles dans le secteur pétrolier/industriel ? OUI / NON / SANS OBJET
+  C) La formation est-elle en adéquation avec le poste ? OUI / PARTIELLE / NON
+  D) Les compétences techniques requises pour "{poste}" sont-elles présentes ? OUI / PARTIELLE / NON
 
-━━━ RÈGLES DE SCORING STRICTES ━━━
-1. Le score mesure uniquement la FIT au poste "{poste}" — un profil brillant mais inadapté à ce poste score bas.
-2. Formation non technique pour un poste technique → score MAXIMUM 3.
-3. Aucune expérience dans le secteur pétrolier/gaz/industriel pour un poste technique → pénalité -2.
-4. Qualités personnelles seules (sans compétences techniques correspondantes) → score MAXIMUM 4.
-5. Expérience directement dans le domaine du poste → bonus +1 (jusqu'à 10 max).
+━━━ ÉTAPE 2 — BARÈME STRICT ━━━
 
-━━━ FORMAT DE RÉPONSE (OBLIGATOIRE, en français) ━━━
+Score de base selon l'expérience professionnelle (A) :
+  • Aucune expérience professionnelle mentionnée dans le CV → score de base MAXIMUM = 5/10
+  • Expérience présente mais hors domaine → score de base MAXIMUM = 6/10
+  • Expérience dans un domaine adjacent → score de base MAXIMUM = 7/10
+  • Expérience directement dans le domaine du poste → score de base MAXIMUM = 10/10
+
+Modificateurs appliqués APRÈS le score de base :
+  +1 si formation parfaitement alignée avec le poste (dans la limite du maximum)
+  -1 si formation non technique pour un poste technique
+  +1 si compétences techniques requises toutes présentes
+  -1 si compétences clés du poste absentes du CV
+
+RÈGLE ABSOLUE :
+Un candidat sans AUCUNE expérience professionnelle ne peut jamais dépasser 5/10,
+peu importe la qualité de sa formation ou de ses projets académiques.
+
+━━━ FORMAT DE RÉPONSE OBLIGATOIRE (en français) ━━━
+
+**INVENTAIRE**
+- Expériences professionnelles : [OUI — liste / NON — aucune]
+- Secteur pétrolier/industriel : [OUI / NON / Partiel]
+- Formation adéquate : [OUI / PARTIELLE / NON]
+- Compétences techniques requises : [OUI / PARTIELLE / NON]
 
 **SCORE DE CORRESPONDANCE** : [chiffre 0-10]/10
+(Justification du score en 1 ligne : score de base X + modificateurs)
 
 **POINTS FORTS**
-- [liste des atouts du candidat par rapport au poste "{poste}"]
+- [atouts du candidat par rapport au poste "{poste}"]
 
 **POINTS FAIBLES / MANQUANTS**
 - [lacunes par rapport aux exigences du poste "{poste}"]
 
 **RECOMMANDATION FINALE**
-[Recommandé / À étudier / Non recommandé] — justification courte en rapport avec le poste "{poste}".
+[Recommandé / À étudier / Non recommandé] — justification courte.
 
 **REMARQUES**
 [Observations utiles pour le recruteur]
 
-**POSTE RECOMMANDÉ** : [OBLIGATOIRE — choisir UN titre EXACT de la liste "POSTES GTP VALIDES" ci-dessus, celui qui correspond le mieux au profil réel du candidat — indépendamment du poste visé]
+**POSTE RECOMMANDÉ** : [titre EXACT de la liste ci-dessus]
 """
 
 
