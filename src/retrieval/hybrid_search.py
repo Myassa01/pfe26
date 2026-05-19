@@ -1,4 +1,4 @@
-"""Fusion hybride Dense + Sparse via Reciprocal Rank Fusion (RRF)."""
+"""Fusion hybride Dense + Sparse via Reciprocal Rank Fusion (RRF) pondérée."""
 from typing import List, Dict, Any
 
 
@@ -6,25 +6,31 @@ def reciprocal_rank_fusion(
     dense_results: List[Dict[str, Any]],
     sparse_results: List[Dict[str, Any]],
     k: int = 60,
+    dense_weight: float = 0.5,
+    sparse_weight: float = 0.5,
 ) -> List[Dict[str, Any]]:
     """
-    Combine les résultats dense et sparse avec RRF.
+    Combine les résultats dense et sparse avec RRF pondérée.
 
-    Score RRF = Σ 1 / (k + rank_i)
-    Formule originale: Cormack et al., 2009
-    k=60 est la valeur par défaut recommandée.
+    Score RRF = dense_weight / (k + rank_dense) + sparse_weight / (k + rank_sparse)
+
+    Formule originale: Cormack et al., 2009 (k=60 recommandé).
+    Les poids permettent de favoriser BM25 (sparse) pour les noms propres
+    ou le dense (sémantique) pour les questions conceptuelles.
+    Par défaut 0.5/0.5 (équipondéré). Configurable via config.rrf_dense_weight
+    et config.rrf_sparse_weight.
     """
     rrf_scores: Dict[str, float] = {}
     doc_map: Dict[str, Dict[str, Any]] = {}
 
     for rank, doc in enumerate(dense_results, 1):
         doc_id = doc["id"]
-        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + dense_weight / (k + rank)
         doc_map[doc_id] = doc
 
     for rank, doc in enumerate(sparse_results, 1):
         doc_id = doc["id"]
-        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + sparse_weight / (k + rank)
         if doc_id not in doc_map:
             doc_map[doc_id] = doc
 

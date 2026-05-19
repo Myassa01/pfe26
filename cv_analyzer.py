@@ -328,7 +328,9 @@ def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
         req_emb = pipeline.embedder.embed_single(req_query)
         req_dense = pipeline.vector_store.search(req_emb, k=pipeline.config.top_k_dense)
         req_sparse = pipeline.bm25.search(req_query, k=pipeline.config.top_k_sparse) if pipeline.bm25 else []
-        req_fused = reciprocal_rank_fusion(req_dense, req_sparse, k=pipeline.config.rrf_k)
+        req_fused = reciprocal_rank_fusion(req_dense, req_sparse, k=pipeline.config.rrf_k,
+                                           dense_weight=pipeline.config.rrf_dense_weight,
+                                           sparse_weight=pipeline.config.rrf_sparse_weight)
         req_chunks = req_fused[:pipeline.config.top_k_after_rerank]
 
         if pipeline.reranker and req_chunks:
@@ -348,7 +350,9 @@ def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
         prof_emb = pipeline.embedder.embed_single(profile_query)
         prof_dense = pipeline.vector_store.search(prof_emb, k=10)
         prof_sparse = pipeline.bm25.search(profile_query, k=10) if pipeline.bm25 else []
-        prof_fused = reciprocal_rank_fusion(prof_dense, prof_sparse, k=pipeline.config.rrf_k)
+        prof_fused = reciprocal_rank_fusion(prof_dense, prof_sparse, k=pipeline.config.rrf_k,
+                                           dense_weight=pipeline.config.rrf_dense_weight,
+                                           sparse_weight=pipeline.config.rrf_sparse_weight)
         prof_chunks = prof_fused[:15]
 
         # Combiner les chunks des deux recherches pour extraire les titres GTP

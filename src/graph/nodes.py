@@ -11,6 +11,7 @@ from functools import partial
 from typing import Any, Dict, List, Optional
 
 from .state import GraphState
+from ..retrieval.hybrid_search import reciprocal_rank_fusion
 
 logger = logging.getLogger(__name__)
 
@@ -312,11 +313,20 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
     # ── 5. retrieve_node ─────────────────────────────────────────────────
 
     def retrieve_node(state: GraphState) -> dict:
-        from ..retrieval.hybrid_search import reciprocal_rank_fusion
-
         intent_data  = state["intent_data"]
         exhaustive   = intent_data.get("exhaustive", False)
         search_query = state["resolved_question"]
+
+        if vector_store.count() == 0:
+            logger.warning("  [retrieve] Vector store vide — aucun document indexé.")
+            return {
+                "search_query":   search_query,
+                "hybrid_results": [],
+                "answer":         "Aucun document n'est encore indexé. Veuillez lancer l'ingestion depuis l'onglet Documents.",
+                "sources":        [],
+                "chunks_used":    0,
+                "path_taken":     "empty_index",
+            }
 
         query_emb = embedder.embed_single(search_query)
 
@@ -329,7 +339,12 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
 
         dense  = vector_store.search(query_emb, k=k_dense)
         sparse = bm25.search(search_query, k=k_sparse)
-        hybrid = reciprocal_rank_fusion(dense, sparse, k=config.rrf_k)
+        hybrid = reciprocal_rank_fusion(
+            dense, sparse,
+            k=config.rrf_k,
+            dense_weight=config.rrf_dense_weight,
+            sparse_weight=config.rrf_sparse_weight,
+        )
 
         logger.info("  [retrieve] Dense: %d | Sparse: %d | RRF: %d",
                     len(dense), len(sparse), len(hybrid))
@@ -341,6 +356,9 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
     # ── 6. rerank_node ───────────────────────────────────────────────────
 
     def rerank_node(state: GraphState) -> dict:
+        if state.get("path_taken") == "empty_index":
+            return {"reranked_chunks": [], "filtered_chunks": []}
+
         intent_data  = state["intent_data"]
         exhaustive   = intent_data.get("exhaustive", False)
         intent       = intent_data.get("intent", "qa")
@@ -377,6 +395,9 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
     # ── 7. generate_node ─────────────────────────────────────────────────
 
     def generate_node(state: GraphState) -> dict:
+        if state.get("path_taken") == "empty_index":
+            return {"context": "", "answer": state.get("answer", ""), "path_taken": "empty_index"}
+
         intent_data       = state["intent_data"]
         exhaustive        = intent_data.get("exhaustive", False)
         resolved_question = state["resolved_question"]
@@ -406,14 +427,30 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
     # ── 8. finalize_node ─────────────────────────────────────────────────
 
     def finalize_node(state: GraphState) -> dict:
-        path = state.get("path_taken", "semantic_rag")
+        path = state.get("path_taken")
+
         if path == "semantic_rag":
             filtered = state.get("filtered_chunks", [])
             sources  = _extract_sources(filtered)
             chunks   = len(filtered)
-        else:
+        elif path in ("exhaustive", "structured_qa"):
             sources = state.get("sources", [])
             chunks  = state.get("chunks_used", 0)
+        elif path == "empty_index":
+            # retrieve_node a court-circuité à cause d'un index vide
+            sources = []
+            chunks  = 0
+        else:
+            # Cas inattendu : tente les deux sources, garde ce qui est disponible
+            filtered = state.get("filtered_chunks", [])
+            if filtered:
+                sources = _extract_sources(filtered)
+                chunks  = len(filtered)
+            else:
+                sources = state.get("sources", [])
+                chunks  = state.get("chunks_used", 0)
+            logger.warning("finalize_node: path_taken inconnu (%r) — fallback heuristique", path)
+
         return {
             "sources":     sources,
             "chunks_used": chunks,

@@ -38,6 +38,9 @@ class Config:
     top_k_sparse: int = 20  # ↑ augmenté (BM25 fort sur les noms propres)
     top_k_after_rerank: int = 5
     rrf_k: int = 60
+    # Poids RRF : BM25 légèrement favorisé pour les noms propres RH
+    rrf_dense_weight: float = 0.4
+    rrf_sparse_weight: float = 0.6
 
     # ── Mode exhaustif (questions de type "liste-moi tout") ─────────────────
     # En mode exhaustif, on utilise un top-k élargi au lieu d'un seuil de score,
