@@ -1,5 +1,5 @@
 """
-Nœuds LangGraph pour le pipeline RAG Myassa.
+Nœuds LangGraph pour le pipeline RAG .
 
 Chaque nœud : (state: GraphState) -> dict  (mise à jour partielle de l'état)
 
@@ -288,8 +288,15 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         column      = intent_data.get("column")
         filt        = intent_data.get("filter") or {}
 
+        # Règle : si on a un filtre, on ignore la colonne spécifique et on retourne
+        # la ligne complète (column=None). Cela évite de retourner juste la valeur du filtre.
+        # Ex: "quels sont les formations obligatoires?" → filtre STATUT=Obligatoire
+        #     Si column=STATUT, on retourne "Obligatoire" au lieu de la ligne complète.
+        #     Avec column=None, on retourne "INTITULE_DE_LA_FORMATION: XYZ | STATUT: Obligatoire"
+        query_column = None if filt else column
+
         direct = structured.list_values(
-            table=source, column=column, filters=filt, distinct=True,
+            table=source, column=query_column, filters=filt, distinct=True,
         )
         sql_warnings = list(structured.last_warnings)
 
@@ -345,7 +352,11 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         column            = intent_data.get("column")
         filt              = intent_data.get("filter") or {}
 
-        qa_rows      = structured.list_values(table=source, column=column, filters=filt, distinct=True)
+        # Même règle que exhaustive_node : si on a un filtre, ignorer la colonne
+        # spécifique et retourner la ligne complète
+        query_column = None if filt else column
+
+        qa_rows      = structured.list_values(table=source, column=query_column, filters=filt, distinct=True)
         sql_warnings = list(structured.last_warnings)
 
         context      = "\n".join(r["content"] for r in qa_rows[:20])
