@@ -75,6 +75,36 @@ def extract_cv_text(content: bytes, filename: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# Validation CV
+# ─────────────────────────────────────────────────────────────
+
+MIN_CV_LENGTH = 200  # caractères minimum pour un CV exploitable
+
+def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
+    """
+    Vérifie que le CV contient suffisamment d'informations pour être analysé.
+    Retourne un dict d'erreur si le CV est invalide, None sinon.
+    """
+    if not cv_text or len(cv_text.strip()) < MIN_CV_LENGTH:
+        return {
+            "answer": (
+                f"⚠️ CV insuffisant ({filename}) — le contenu est trop limité "
+                f"pour permettre une analyse fiable.\n\n"
+                f"Le fichier ne contient que {len(cv_text.strip())} caractères "
+                f"(minimum requis : {MIN_CV_LENGTH}).\n\n"
+                "Veuillez soumettre un CV complet incluant : formation, "
+                "expériences professionnelles et compétences."
+            ),
+            "score": 0,
+            "poste": "Non analysé",
+            "recommended_poste": "Non déterminable — CV incomplet",
+            "sources": [],
+            "elapsed_seconds": 0.0,
+        }
+    return None
+
+
+# ─────────────────────────────────────────────────────────────
 # Prompt analyse
 # ─────────────────────────────────────────────────────────────
 
@@ -90,6 +120,13 @@ en utilisant les exigences récupérées depuis la base documentaire interne.
 === CV DU CANDIDAT ===
 {cv_text}
 
+=== RÈGLES ABSOLUES D'ANALYSE ===
+1. Tu dois te baser UNIQUEMENT sur ce qui est EXPLICITEMENT écrit dans le CV ci-dessus.
+2. NE JAMAIS inférer, supposer ou inventer des compétences non mentionnées.
+3. Un lien GitHub ou LinkedIn N'EST PAS une compétence déclarée — ne pas en déduire des langages ou des projets.
+4. Si une information est absente du CV, écrire explicitement "Non mentionné dans le CV".
+5. Si le CV est très incomplet, le signaler clairement dans les remarques.
+
 === BARÈME STRICT ===
 - 0-2 : Profil hors domaine
 - 3-4 : Faible adéquation
@@ -97,29 +134,31 @@ en utilisant les exigences récupérées depuis la base documentaire interne.
 - 7-8 : Bonne adéquation
 - 9-10 : Excellente adéquation
 
-RÈGLES :
+RÈGLES DE NOTATION :
 - Formation non technique pour poste technique => score max 3
 - Sans expérience industrielle/pétrole/gaz => pénalité
 - Qualités personnelles seules ≠ bon score
+- CV vide ou quasi-vide => score 0 à 2 maximum
 
 Réponds STRICTEMENT en français :
 
 **SCORE DE CORRESPONDANCE** : [0-10]/10
 
 **POINTS FORTS**
-- ...
+- (uniquement ce qui est explicitement mentionné dans le CV)
 
 **POINTS FAIBLES / MANQUANTS**
-- ...
+- (compétences ou expériences requises absentes du CV)
 
 **RECOMMANDATION FINALE**
 Recommandé / À étudier / Non recommandé avec justification.
 
 **REMARQUES**
-Observations supplémentaires.
+Observations supplémentaires. Signaler si le CV est incomplet ou peu détaillé.
 
-**POSTE RECOMMANDÉ** : [intitulé du poste Sonatrach le PLUS ADAPTÉ au profil réel du candidat, 
-indépendamment du poste visé — basé uniquement sur sa formation et son expérience]
+**POSTE RECOMMANDÉ** : [intitulé du poste Sonatrach le PLUS ADAPTÉ au profil réel du candidat,
+basé UNIQUEMENT sur sa formation et son expérience explicitement mentionnées dans le CV.
+Si le CV est trop vide pour déterminer un poste, écrire "Indéterminable — CV insuffisant"]
 """
 
 
@@ -138,9 +177,18 @@ def build_analysis_prompt(cv_text: str, poste: str, job_context: str) -> str:
 # Analyse principale
 # ─────────────────────────────────────────────────────────────
 
-def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
+def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str, filename: str = "CV") -> dict:
     import time
     t0 = time.time()
+
+    # ── Validation préalable du contenu du CV ──────────────────
+    validation_error = validate_cv_text(cv_text, filename)
+    if validation_error:
+        logger.warning(
+            "CV '%s' rejeté : contenu insuffisant (%d caractères)",
+            filename, len(cv_text.strip())
+        )
+        return validation_error
 
     search_poste = poste.strip() if poste else ""
 
@@ -150,6 +198,7 @@ def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
         cv_hint = " ".join(cv_text[:600].split())[:300]
         search_query = f"poste Sonatrach requis diplôme expérience {cv_hint}"
 
+    # ── Recherche RAG ──────────────────────────────────────────
     try:
         query_embedding = pipeline.embedder.embed_single(search_query)
 
@@ -202,7 +251,7 @@ def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
         job_context = ""
         sources = []
 
-    # Prompt final
+    # ── Prompt final ───────────────────────────────────────────
     prompt = build_analysis_prompt(
         cv_text=cv_text,
         poste=search_poste,
@@ -212,7 +261,11 @@ def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
     try:
         answer = pipeline.llm.generate(
             prompt=prompt,
-            system="Tu es un expert RH chez Sonatrach. Réponds uniquement en français.",
+            system=(
+                "Tu es un expert RH chez Sonatrach. Réponds uniquement en français. "
+                "Tu ne dois JAMAIS inventer ou supposer des informations absentes du CV fourni. "
+                "Toute affirmation doit être directement justifiable par le texte du CV."
+            ),
             temperature=0.0,
             max_tokens=pipeline.config.llm_max_tokens_long,
         )
@@ -223,17 +276,17 @@ def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
     score = _extract_score(answer)
     recommended_poste = _extract_recommended_poste(answer)
 
-    
     elapsed = round(time.time() - t0, 2)
 
     return {
-    "answer": answer,
-    "score": score,
-    "poste": search_poste or recommended_poste or "Non précisé",
-    "recommended_poste": recommended_poste or "Non précisé",  # ← ajouter
-    "sources": sources,
-    "elapsed_seconds": elapsed,
-}
+        "answer": answer,
+        "score": score,
+        "poste": search_poste or recommended_poste or "Non précisé",
+        "recommended_poste": recommended_poste or "Non précisé",
+        "sources": sources,
+        "elapsed_seconds": elapsed,
+    }
+
 
 # ─────────────────────────────────────────────────────────────
 # Parsers
@@ -274,5 +327,5 @@ def _extract_recommended_poste(text: str) -> Optional[str]:
             # Rejeter si c'est le texte de template (crochets, trop court)
             if value and "[" not in value and len(value) > 3:
                 return value
-   
+
     return None
