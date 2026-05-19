@@ -73,13 +73,13 @@ def extract_cv_text(content: bytes, filename: str) -> str:
 # Validation CV
 # ─────────────────────────────────────────────────────────────
 
-MIN_CV_LENGTH = 200  # caractères minimum pour un CV exploitable
+MIN_CV_LENGTH = 200
 
 
 def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
     """
-    Vérifie que le CV contient suffisamment d'informations pour être analysé.
-    Retourne un dict d'erreur si le CV est invalide, None sinon.
+    Vérifie que le CV contient suffisamment d'informations.
+    Retourne un dict d'erreur si invalide, None sinon.
     """
     if not cv_text or len(cv_text.strip()) < MIN_CV_LENGTH:
         return {
@@ -108,7 +108,7 @@ def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
 # ─────────────────────────────────────────────────────────────
 
 ANALYSIS_PROMPT = """
-Tu es un expert RH chez Sonatrach chargé d'évaluer des candidatures.
+Tu es un expert RH chez Sonatrach chargé d'évaluer objectivement des candidatures.
 
 Analyse le CV ci-dessous par rapport au poste "{poste}"
 en utilisant les exigences récupérées depuis la base documentaire interne.
@@ -119,85 +119,86 @@ en utilisant les exigences récupérées depuis la base documentaire interne.
 === CV DU CANDIDAT ===
 {cv_text}
 
-=== RÈGLES ABSOLUES D'ANALYSE ===
-1. Tu dois te baser UNIQUEMENT sur ce qui est EXPLICITEMENT écrit dans le CV ci-dessus.
-2. NE JAMAIS inférer, supposer ou inventer des compétences non mentionnées.
-3. Un lien GitHub ou LinkedIn N'EST PAS une compétence déclarée — ne pas en déduire des langages ou des projets.
-4. Si une information est absente du CV, écrire explicitement "Non mentionné dans le CV".
-5. Si le CV est très incomplet, le signaler clairement dans les remarques.
+════════════════════════════════════════════════════════════════
+ÉTAPE 1 — VÉRIFICATION DU DOMAINE (à faire en premier)
+════════════════════════════════════════════════════════════════
 
-=== DÉTECTION HORS DOMAINE — RÈGLE PRIORITAIRE ABSOLUE ===
-Avant toute notation, détermine si le domaine de formation et d'expérience du candidat
-correspond au domaine du poste visé.
+Le domaine du candidat (formation + expérience principale) est-il compatible
+avec le domaine du poste ?
 
-EXEMPLES DE DOMAINES INCOMPATIBLES (liste non exhaustive) :
-- Poste Finance / Comptabilité  ←→  Profil Soudeur, Mécanicien, Électricien, Géologue, Forage, BTP
-- Poste Technique / Ingénierie  ←→  Profil Lettres, Sciences Humaines, Commerce pur
-- Poste HSE                     ←→  Profil purement administratif sans formation sécurité
-- Poste Informatique / IT       ←→  Profil manuel ou artisanal sans compétences numériques
-- Poste Juridique               ←→  Profil technique ou scientifique sans formation droit
+Exemples de domaines INCOMPATIBLES (score = 0 obligatoire) :
+  • Poste Finance/Comptabilité  ←→  Soudeur, Mécanicien, Forage, BTP, Géologie
+  • Poste Technique/Ingénierie  ←→  Lettres, Sciences Humaines sans lien technique
+  • Poste Juridique             ←→  Profil technique ou scientifique sans formation droit
+  • Poste HSE                   ←→  Profil purement administratif sans formation sécurité
 
-RÈGLE HORS DOMAINE — NON NÉGOCIABLE :
-→ Si les domaines sont incompatibles : Score OBLIGATOIREMENT 0/10
-→ Aucune compétence transversale (communication, ponctualité, travail en équipe)
-   ne peut justifier un score supérieur à 0 si le domaine est incompatible
-→ Mentionner explicitement : "Profil hors domaine — aucune adéquation avec le poste visé"
+Exemples de domaines COMPATIBLES (noter normalement selon le barème) :
+  • Poste Finance/Comptabilité  ←→  Diplôme finance, comptabilité, économie, gestion, audit
+  • Poste Informatique/IT       ←→  Diplôme informatique, data, systèmes d'information
+  • Poste HSE                   ←→  Formation HSE, sécurité industrielle, environnement
+  • Poste RH                    ←→  Diplôme RH, droit du travail, sciences sociales
 
-=== BARÈME STRICT (uniquement si même domaine) ===
-- 0    : Profil hors domaine (domaines incompatibles) — OBLIGATOIRE
-- 1-2  : Même domaine, profil quasi-inexistant ou formation très éloignée
-- 3-4  : Faible adéquation (domaine proche, compétences insuffisantes)
-- 5-6  : Adéquation moyenne
-- 7-8  : Bonne adéquation
-- 9-10 : Excellente adéquation
+RÈGLE ABSOLUE :
+→ Si domaines INCOMPATIBLES : score = 0/10 et passer directement au format de réponse
+→ Si domaines COMPATIBLES : continuer avec le barème ci-dessous
 
-=== RÈGLES DE NOTATION COMPLÉMENTAIRES ===
-- CV vide ou quasi-vide => score 0 à 2 maximum
-- Sans expérience dans le secteur pétrolier/gazier => pénalité de 1 à 2 points
-- Qualités personnelles seules ≠ bon score
-- Les formations courtes (< 1 semaine) ne compensent pas l'absence de diplôme adapté
+════════════════════════════════════════════════════════════════
+ÉTAPE 2 — NOTATION (uniquement si domaines compatibles)
+════════════════════════════════════════════════════════════════
 
-=== CRITÈRES DE DÉPARTAGE (OBLIGATOIRES) ===
-Pour permettre le classement en cas d'égalité de score, extraire :
+Évalue le candidat en te basant UNIQUEMENT sur ce qui est écrit dans le CV.
+NE JAMAIS inventer, supposer ou inférer des compétences non mentionnées.
 
-ANNÉES_EXPÉRIENCE : nombre total d'années d'expérience professionnelle dans le domaine du poste.
-- Calculé à partir des dates de début et de fin mentionnées dans le CV
-- Année courante = 2025 (pour les postes "à présent" / "présent" / "actuellement")
-- Si aucune expérience dans le domaine du poste : indiquer 0
-- Si les dates sont absentes : indiquer -1
+BARÈME :
+  1-2  : Domaine correct mais profil quasi-inexistant (formation très éloignée, aucune expérience)
+  3-4  : Faible adéquation (domaine correct, mais compétences ou expérience insuffisantes)
+  5-6  : Adéquation moyenne (compétences partielles, expérience limitée)
+  7-8  : Bonne adéquation (compétences solides, expérience significative)
+  9-10 : Excellente adéquation (profil expert, expérience étendue, compétences complètes)
 
-ANNÉE_DIPLOME : année d'obtention du diplôme le plus élevé EN LIEN avec le poste.
-- Si plusieurs diplômes en lien avec le poste, prendre le plus récent
-- Si aucun diplôme en lien avec le poste : indiquer 0
-- Si l'année est absente : indiquer 0
+Règles de notation complémentaires :
+  - Expérience directe dans le secteur pétrolier/gazier : +1 point bonus
+  - Aucune expérience professionnelle dans le domaine : -2 points
+  - Formations uniquement sans expérience : score maximum 6
+  - CV vide ou quasi-vide : score 0-2 maximum
 
-=== FORMAT DE RÉPONSE OBLIGATOIRE ===
-Réponds STRICTEMENT en français avec ce format exact (sans modifier les balises) :
+════════════════════════════════════════════════════════════════
+ÉTAPE 3 — RÈGLES D'ANALYSE
+════════════════════════════════════════════════════════════════
 
-**SCORE DE CORRESPONDANCE** : [0-10]/10
+1. Baser l'analyse UNIQUEMENT sur le contenu explicite du CV
+2. Si une information est absente : écrire "Non mentionné dans le CV"
+3. Un lien GitHub/LinkedIn seul n'est pas une compétence
+4. Les qualités personnelles seules ne justifient pas un bon score
+5. Signaler clairement si le CV est incomplet
 
-**DOMAINE** : [Même domaine / Hors domaine]
+════════════════════════════════════════════════════════════════
+FORMAT DE RÉPONSE OBLIGATOIRE
+════════════════════════════════════════════════════════════════
+
+**SCORE DE CORRESPONDANCE** : X/10
+
+**DOMAINE** : Même domaine / Hors domaine
 
 **POINTS FORTS**
-- (uniquement ce qui est explicitement mentionné dans le CV)
-- (écrire "Aucun point fort pertinent pour ce poste" si hors domaine)
+- (lister uniquement ce qui est explicitement dans le CV)
 
 **POINTS FAIBLES / MANQUANTS**
 - (compétences ou expériences requises absentes du CV)
 
 **RECOMMANDATION FINALE**
-Recommandé / À étudier / Non recommandé — avec justification précise.
+[Recommandé / À étudier / Non recommandé] — justification précise en 2-3 phrases.
 
 **REMARQUES**
-Observations supplémentaires. Signaler si le CV est incomplet, hors domaine ou peu détaillé.
+Observations complémentaires si nécessaire.
 
-**ANNÉES_EXPÉRIENCE** : [nombre entier uniquement, ex: 7]
+**ANNÉES_EXPÉRIENCE** : [entier, nombre d'années d'expérience dans le domaine du poste, -1 si inconnu]
 
-**ANNÉE_DIPLOME** : [année entière uniquement, ex: 2013]
+**ANNÉE_DIPLOME** : [année du diplôme le plus élevé en lien avec le poste, 0 si absent ou inconnu]
 
-**POSTE RECOMMANDÉ** : [intitulé du poste Sonatrach le PLUS ADAPTÉ au profil réel du candidat,
-basé UNIQUEMENT sur sa formation et son expérience explicitement mentionnées dans le CV.
-Si le CV est trop vide pour déterminer un poste, écrire "Indéterminable — CV insuffisant"]
+**POSTE RECOMMANDÉ** : [poste Sonatrach le plus adapté au profil réel du candidat,
+basé uniquement sur ce qui est écrit dans le CV.
+Si CV insuffisant : "Indéterminable — CV insuffisant"]
 """
 
 
@@ -205,8 +206,8 @@ def build_analysis_prompt(cv_text: str, poste: str, job_context: str) -> str:
     return ANALYSIS_PROMPT.format(
         poste=poste or "poste généraliste Sonatrach",
         job_context=job_context or (
-            "Aucun document spécifique trouvé. "
-            "Utiliser bonnes pratiques RH générales."
+            "Aucun document spécifique trouvé dans la base. "
+            "Appliquer les critères RH généraux Sonatrach pour ce type de poste."
         ),
         cv_text=cv_text[:4000],
     )
@@ -222,7 +223,7 @@ def analyze_cv_with_pipeline(
     import time
     t0 = time.time()
 
-    # ── Validation préalable du contenu du CV ──────────────────
+    # ── Validation préalable ───────────────────────────────────
     validation_error = validate_cv_text(cv_text, filename)
     if validation_error:
         logger.warning(
@@ -292,7 +293,7 @@ def analyze_cv_with_pipeline(
         job_context = ""
         sources = []
 
-    # ── Prompt final ───────────────────────────────────────────
+    # ── Appel LLM ─────────────────────────────────────────────
     prompt = build_analysis_prompt(
         cv_text=cv_text,
         poste=search_poste,
@@ -304,10 +305,10 @@ def analyze_cv_with_pipeline(
             prompt=prompt,
             system=(
                 "Tu es un expert RH chez Sonatrach. Réponds uniquement en français. "
-                "Tu ne dois JAMAIS inventer ou supposer des informations absentes du CV fourni. "
-                "Toute affirmation doit être directement justifiable par le texte du CV. "
-                "Un profil dont le domaine est incompatible avec le poste reçoit "
-                "OBLIGATOIREMENT 0/10, sans aucune exception possible."
+                "Base-toi UNIQUEMENT sur le contenu explicite du CV fourni, sans invention. "
+                "Si le domaine du candidat est incompatible avec le poste, le score est 0/10. "
+                "Si le domaine est compatible, évalue honnêtement selon le barème : "
+                "un excellent profil dans le bon domaine doit obtenir 8 à 10/10."
             ),
             temperature=0.0,
             max_tokens=pipeline.config.llm_max_tokens_long,
@@ -316,12 +317,11 @@ def analyze_cv_with_pipeline(
     except Exception as e:
         raise RuntimeError(f"Erreur analyse LLM : {e}")
 
-    score            = _extract_score(answer)
+    score             = _extract_score(answer)
     recommended_poste = _extract_recommended_poste(answer)
     years_experience  = _extract_years_experience(answer)
     diploma_year      = _extract_diploma_year(answer)
 
-    # Log debug si score non extrait
     if score is None:
         logger.warning(
             "Score non extrait pour '%s'. Début réponse LLM :\n%s",
@@ -337,8 +337,8 @@ def analyze_cv_with_pipeline(
         "recommended_poste": recommended_poste or "Non précisé",
         "sources":           sources,
         "elapsed_seconds":   elapsed,
-        "years_experience":  years_experience,   # critère départage 1
-        "diploma_year":      diploma_year,        # critère départage 2
+        "years_experience":  years_experience,
+        "diploma_year":      diploma_year,
         "filename":          filename,
     }
 
@@ -349,12 +349,12 @@ def analyze_cv_with_pipeline(
 
 def sort_results_with_tiebreaker(results: list) -> list:
     """
-    Trie les résultats par ordre décroissant selon :
-      1. Score décroissant  (critère principal)
-      2. Années d'expérience décroissantes  (1er départage : plus expérimenté gagne)
-      3. Année du diplôme croissante  (2e départage : diplôme le plus ancien = plus de recul)
+    Trie les résultats batch par ordre décroissant :
+      1. Score décroissant                    (critère principal)
+      2. Années d'expérience décroissantes    (1er départage)
+      3. Année du diplôme croissante          (2e départage : diplôme plus ancien = plus de recul)
 
-    Usage dans le backend batch :
+    Utilisation dans le backend :
         sorted_results = sort_results_with_tiebreaker(analysis_results)
     """
     def sort_key(r: dict) -> tuple:
@@ -371,15 +371,15 @@ def sort_results_with_tiebreaker(results: list) -> list:
 
         return (
             -score,        # décroissant
-            -years_exp,    # décroissant (plus d'exp = mieux classé)
-            diploma_year,  # croissant   (diplôme plus ancien = plus de recul pro)
+            -years_exp,    # décroissant
+            diploma_year,  # croissant
         )
 
     return sorted(results, key=sort_key)
 
 
 # ─────────────────────────────────────────────────────────────
-# Parsers internes
+# Parsers
 # ─────────────────────────────────────────────────────────────
 
 def _extract_score(text: str) -> Optional[int]:
@@ -400,7 +400,7 @@ def _extract_score(text: str) -> Optional[int]:
             if 0 <= val <= 10:
                 return val
 
-    # Fallback : premier X/10 trouvé n'importe où dans le texte
+    # Fallback : premier X/10 dans le texte
     m = re.search(r'\b(\d{1,2})/10\b', text)
     if m:
         val = int(m.group(1))
@@ -427,8 +427,7 @@ def _extract_recommended_poste(text: str) -> Optional[str]:
 
 def _extract_years_experience(text: str) -> Optional[int]:
     """
-    Extrait le nombre d'années d'expérience depuis la réponse LLM.
-    Format attendu dans la réponse : **ANNÉES_EXPÉRIENCE** : 7
+    Format attendu dans la réponse LLM : **ANNÉES_EXPÉRIENCE** : 7
     """
     import re
     patterns = [
@@ -446,8 +445,7 @@ def _extract_years_experience(text: str) -> Optional[int]:
 
 def _extract_diploma_year(text: str) -> Optional[int]:
     """
-    Extrait l'année du diplôme le plus élevé depuis la réponse LLM.
-    Format attendu dans la réponse : **ANNÉE_DIPLOME** : 2013
+    Format attendu dans la réponse LLM : **ANNÉE_DIPLOME** : 2013
     """
     import re
     patterns = [
