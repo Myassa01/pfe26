@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-import sys, os, json, shutil
+import sys, os, json, shutil, logging, traceback, types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Patch : langchain-core peut chercher langchain.debug qui n'existe pas si
+# le package `langchain` n'est pas installé (on n'utilise que langchain-core).
+if "langchain" not in sys.modules:
+    _lc_stub = types.ModuleType("langchain")
+    _lc_stub.debug = False
+    sys.modules["langchain"] = _lc_stub
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Depends, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -136,6 +145,7 @@ def query_endpoint(req: QuestionRequest, user: dict = Depends(get_current_user))
         )
         return result
     except Exception as e:
+        logger.error("Erreur /query:\n%s", traceback.format_exc())
         raise HTTPException(500, str(e))
 
 
