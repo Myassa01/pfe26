@@ -3,7 +3,6 @@
 import json
 import logging
 import re
-from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -129,19 +128,12 @@ class IntentRouter:
     def __init__(self, llm: HFClient, schema: Dict[str, dict], cache_size: int = 256):
         self.llm        = llm
         self.schema     = schema
-        self.cache_size = cache_size
-        self._cache: "OrderedDict[str, dict]" = OrderedDict()
         self._schema_block   = self._build_schema_block(schema)
         self._examples_block = self._build_dynamic_examples(schema)
         logger.info("IntentRouter: %d source(s) dans le schéma (%s)",
                     len(schema), ", ".join(schema.keys()))
 
     def classify(self, question: str) -> dict:
-        key = self._normalize_question(question)
-        if key in self._cache:
-            self._cache.move_to_end(key)
-            return self._cache[key]
-
         prompt = _PROMPT_TEMPLATE.format(
             schema_block=self._schema_block,
             examples_block=self._examples_block,
@@ -165,10 +157,6 @@ class IntentRouter:
             result["intent"], result["source"], result["column"],
             result["exhaustive"], result["filter"],
         )
-
-        self._cache[key] = result
-        if len(self._cache) > self.cache_size:
-            self._cache.popitem(last=False)
         return result
 
     def _build_schema_block(self, schema: Dict[str, dict]) -> str:

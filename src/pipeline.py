@@ -107,9 +107,6 @@ class RAGPipeline:
         self.schema = self._build_combined_schema(config.docs_dir)
         self.intent_router = IntentRouter(llm=self.llm, schema=self.schema)
 
-        self._retrieval_cache: Dict[tuple, List[Dict]] = {}
-        self._cache_max_size: int = 128
-
         logger.info("=" * 50)
         logger.info("Pipeline prêt.")
 
@@ -388,7 +385,6 @@ class RAGPipeline:
         ]
         self.bm25.add_documents(bm25_docs)
         self.bm25.save(self.config.bm25_index_path)
-        self._retrieval_cache.clear()
 
         # ── Recharge DuckDB + schéma sans redémarrer l'app ──────────────────
         self.structured.reload(docs_dir)
@@ -435,7 +431,6 @@ class RAGPipeline:
         ]
         self.bm25.add_documents(bm25_docs)
         self.bm25.save(self.config.bm25_index_path)
-        self._retrieval_cache.clear()
 
         # ── Recharge DuckDB + schéma sans redémarrer l'app ──────────────────
         self.structured.reload(self.config.docs_dir)
@@ -521,7 +516,7 @@ class RAGPipeline:
             sql_warnings = list(self.structured.last_warnings)
             if qa_rows:
                 context = "\n".join(r["content"] for r in qa_rows[:20])
-                history_text = ""
+                history_text = self._format_history(history) if history else ""
                 prompt = _GENERATION_PROMPT.format(
                     context=context, question=question, history=history_text,
                 )
@@ -555,42 +550,32 @@ class RAGPipeline:
             search_query = question
 
         # 4. Recherche hybride + Reranking
-        cache_key = (search_query.strip().lower(), exhaustive, source, column)
-        if cache_key in self._retrieval_cache:
-            logger.info("  [2/4] Recherche hybride... (cache hit)")
-            logger.info("  [3/4] Reranking... (cache hit)")
-            reranked = self._retrieval_cache[cache_key]
+        logger.info("  [2/4] Recherche hybride%s...", " (mode exhaustif)" if exhaustive else "")
+        query_emb = self.embedder.embed_single(search_query)
+        if exhaustive:
+            k_dense = min(self.config.max_chunks_exhaustive * 5, self.vector_store.count())
+            k_sparse = self.config.max_chunks_exhaustive * 5
         else:
-            logger.info("  [2/4] Recherche hybride%s...", " (mode exhaustif)" if exhaustive else "")
-            query_emb = self.embedder.embed_single(search_query)
-            if exhaustive:
-                k_dense = min(self.config.max_chunks_exhaustive * 5, self.vector_store.count())
-                k_sparse = self.config.max_chunks_exhaustive * 5
-            else:
-                k_dense = self.config.top_k_dense
-                k_sparse = self.config.top_k_sparse
-            dense  = self.vector_store.search(query_emb, k=k_dense)
-            sparse = self.bm25.search(search_query, k=k_sparse)
-            hybrid = reciprocal_rank_fusion(dense, sparse, k=self.config.rrf_k)
-            logger.info("        Dense: %d | Sparse: %d | RRF: %d", len(dense), len(sparse), len(hybrid))
+            k_dense = self.config.top_k_dense
+            k_sparse = self.config.top_k_sparse
+        dense  = self.vector_store.search(query_emb, k=k_dense)
+        sparse = self.bm25.search(search_query, k=k_sparse)
+        hybrid = reciprocal_rank_fusion(dense, sparse, k=self.config.rrf_k)
+        logger.info("        Dense: %d | Sparse: %d | RRF: %d", len(dense), len(sparse), len(hybrid))
 
-            logger.info("  [3/4] Reranking...")
-            if exhaustive:
-                reranked = self.reranker.rerank(
-                    query=search_query,
-                    documents=hybrid[:self.config.max_chunks_exhaustive * 3],
-                    top_k=self.config.max_chunks_exhaustive,
-                )
-            else:
-                reranked = self.reranker.rerank(
-                    query=search_query,
-                    documents=hybrid[:20],
-                    top_k=self.config.top_k_after_rerank,
-                )
-            if len(self._retrieval_cache) >= self._cache_max_size:
-                oldest_key = next(iter(self._retrieval_cache))
-                del self._retrieval_cache[oldest_key]
-            self._retrieval_cache[cache_key] = reranked
+        logger.info("  [3/4] Reranking...")
+        if exhaustive:
+            reranked = self.reranker.rerank(
+                query=search_query,
+                documents=hybrid[:self.config.max_chunks_exhaustive * 3],
+                top_k=self.config.max_chunks_exhaustive,
+            )
+        else:
+            reranked = self.reranker.rerank(
+                query=search_query,
+                documents=hybrid[:20],
+                top_k=self.config.top_k_after_rerank,
+            )
         logger.info("        → %d chunks retenus", len(reranked))
 
         # 5. Filtre par source pertinente
@@ -645,10 +630,10 @@ class RAGPipeline:
         if not history:
             return ""
         lines = []
-        for msg in history[-4:]:
+        for msg in history[-6:]:
             role = "Utilisateur" if msg["role"] == "user" else "Assistant"
             lines.append(f"{role}: {msg['content']}")
-        return "Historique:\n" + "\n".join(lines) + "\n\n"
+        return "Historique de la conversation:\n" + "\n".join(lines) + "\n\n"
 
     def _format_context(self, chunks: List[Dict]) -> str:
         parts = []
