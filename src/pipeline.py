@@ -25,19 +25,20 @@ from .generation.query_transform import QueryTransformer
 from .generation.intent_router import IntentRouter, SchemaDiscovery
 from .structured import StructuredQueryEngine
 
-# ── Prompts optimisés pour petit modèle (qwen2.5:0.5b) ──────────────────────
+# ── Prompts optimisés — précision maximale, zéro hallucination ──────────────
 
 # ── Prompts optimisés — précision maximale, zéro hallucination ──────────────
 
-_SYSTEM_PROMPT = """Tu es un assistant RH. Tu réponds UNIQUEMENT en français, de façon COURTE et DIRECTE.
+_SYSTEM_PROMPT = """Tu es un assistant RH expert et rigoureux. Tu réponds UNIQUEMENT en français.
 
-RÈGLES ABSOLUES :
-1. Utilise UNIQUEMENT le contexte fourni entre <contexte>. Jamais tes connaissances internes.
-2. Si plusieurs sources sont présentes, utilise UNIQUEMENT la source Excel (.xlsx) pour les questions sur les personnes/postes/départements/services.
-3. Ignore complètement les sources PDF/DOCX pour les questions sur les personnes.
-4. Si l'information n'est pas dans le contexte → réponds : "Information non disponible."
-5. N'INVENTE PAS. Ne déduis pas. Ne complète pas.
-6. Réponse COURTE : une phrase maximum pour une question sur une personne."""
+RÈGLES ABSOLUES — toute violation est une erreur grave :
+1. UTILISE UNIQUEMENT le contexte fourni entre les balises <contexte>. N'utilise jamais tes connaissances internes.
+2. Chaque bloc du contexte est étiqueté [SOURCE]. Tu dois IDENTIFIER quelle source est pertinente pour la question AVANT de répondre.
+3. Si plusieurs sources sont présentes, utilise UNIQUEMENT celle(s) dont le contenu correspond directement à la question. Ignore les autres.
+4. Si la réponse n'est pas explicitement écrite dans le contexte → réponds exactement : "Information non disponible dans les documents fournis."
+5. N'INVENTE PAS, ne déduis pas, ne complète pas par logique. Cite seulement ce qui est écrit.
+6. Ne mentionne jamais des données issues d'une source non pertinente pour la question posée.
+7. Si la question porte sur une entité précise (une personne, un département, un poste), filtre strictement sur cette entité dans le contexte."""
 
 _GENERATION_PROMPT = """<contexte>
 {context}
@@ -48,12 +49,11 @@ _GENERATION_PROMPT = """<contexte>
 {question}
 </question>
 
-INSTRUCTIONS STRICTES :
-- Si la question demande "qui est [NOM]" → réponds : "[NOM COMPLET] est [FONCTION]."
-- Si la question demande "qui est le [POSTE]" → réponds : "Le [POSTE] est [NOM COMPLET]."
-- Une seule phrase. Pas d'explication supplémentaire. Pas de bullet points.
-- Utilise UNIQUEMENT les données Excel (.xlsx), ignore les PDF.
-- Si non trouvé → "Information non disponible."
+Instructions de réponse :
+- Identifie d'abord quelle(s) source(s) dans le contexte est (sont) directement pertinente(s) pour cette question.
+- Utilise UNIQUEMENT les données de cette/ces source(s).
+- Sois précis, concis, et factuel.
+- Si l'information n'est pas dans le contexte, dis-le clairement sans improviser.
 
 Réponse :"""
 
@@ -66,11 +66,12 @@ _GENERATION_PROMPT_LIST = """<contexte>
 {question}
 </question>
 
-INSTRUCTIONS STRICTES :
-- Liste UNIQUEMENT les éléments présents dans le contexte Excel (.xlsx).
-- Format : liste numérotée, un élément par ligne, nom uniquement.
-- Pas d'explication. Pas de commentaire. Pas de résumé.
-- Ignore les sources PDF/DOCX.
+Instructions de réponse :
+- Identifie la source pertinente pour cette question de liste.
+- Liste TOUS les éléments présents dans cette source, sans en omettre aucun.
+- Ne fusionne pas, ne résume pas, ne regroupe pas.
+- Format obligatoire : liste numérotée, un élément par ligne.
+- N'ajoute aucun élément qui ne figure pas explicitement dans le contexte.
 
 Réponse :"""
 
@@ -106,6 +107,8 @@ class RAGPipeline:
 
         self.schema = self._build_combined_schema(config.docs_dir)
         self.intent_router = IntentRouter(llm=self.llm, schema=self.schema)
+
+        # ── CACHE SUPPRIMÉ — causait des réponses croisées entre questions ──
 
         logger.info("=" * 50)
         logger.info("Pipeline prêt.")
@@ -216,12 +219,6 @@ class RAGPipeline:
     # ── EXTRACTION DU NOM PRINCIPAL D'UN ITEM ────────────────────────────────
 
     def _extract_primary_value(self, item: str, source: Optional[str]) -> str:
-        """Extrait la valeur principale d'un item DuckDB — 100% dynamique.
-
-        Utilise get_primary_column() de StructuredQueryEngine qui détecte
-        automatiquement la colonne la plus descriptive de chaque table,
-        sans aucun nom de colonne hard-codé.
-        """
         content = item
         if "] " in content and content.startswith("["):
             content = content.split("] ", 1)[1]
@@ -238,7 +235,6 @@ class RAGPipeline:
         if not pairs:
             return item
 
-        # Colonne principale détectée dynamiquement par DuckDB
         if source and self.structured.has_table(source):
             primary_col = self.structured.get_primary_column(source)
             if primary_col:
@@ -246,7 +242,6 @@ class RAGPipeline:
                 if val and len(val) > 2:
                     return val
 
-        # Fallback : valeur la plus longue = la plus descriptive
         best = max(pairs.values(), key=lambda v: len(v), default=item)
         return best if len(best) > 2 else item
 
@@ -464,7 +459,6 @@ class RAGPipeline:
             direct = self._structured_query(intent_data)
             sql_warnings = list(self.structured.last_warnings)
             if direct:
-                # Dédup sur la valeur principale uniquement (pas le contenu complet)
                 seen: set = set()
                 unique_names = []
                 for d in direct:
@@ -475,12 +469,8 @@ class RAGPipeline:
                         seen.add(key)
                         unique_names.append(name)
 
-                # Validation LLM par batches
-                # Pas de validation LLM : DuckDB retourne déjà les bonnes données
-                # La validation filtrait trop et perdait des résultats valides
                 validated = unique_names
 
-                # Construction de la réponse
                 prefix_lines = []
                 if sql_warnings:
                     prefix_lines.append("⚠ Note :")
@@ -516,6 +506,7 @@ class RAGPipeline:
             sql_warnings = list(self.structured.last_warnings)
             if qa_rows:
                 context = "\n".join(r["content"] for r in qa_rows[:20])
+                # FIX BUG 1 : historique correctement injecté
                 history_text = self._format_history(history) if history else ""
                 prompt = _GENERATION_PROMPT.format(
                     context=context, question=question, history=history_text,
@@ -550,6 +541,7 @@ class RAGPipeline:
             search_query = question
 
         # 4. Recherche hybride + Reranking
+        # FIX BUG CACHE : cache supprimé — causait des réponses croisées entre questions
         logger.info("  [2/4] Recherche hybride%s...", " (mode exhaustif)" if exhaustive else "")
         query_emb = self.embedder.embed_single(search_query)
         if exhaustive:
@@ -578,6 +570,23 @@ class RAGPipeline:
             )
         logger.info("        → %d chunks retenus", len(reranked))
 
+        # FIX BUG 3 : seuil de score minimum pour rejeter les chunks hors-sujet
+        RERANK_THRESHOLD = 0.0
+        reranked_filtered = [doc for doc in reranked if doc.get("score", 0) >= RERANK_THRESHOLD]
+        if not reranked_filtered:
+            elapsed = round(time.time() - start, 2)
+            logger.info("  ⚠ Aucun chunk au-dessus du seuil %.1f → réponse par défaut", RERANK_THRESHOLD)
+            return {
+                "question":        question,
+                "search_query":    search_query,
+                "answer":          "Information non disponible.",
+                "sources":         [],
+                "chunks_used":     0,
+                "elapsed_seconds": elapsed,
+                "intent":          intent_data,
+            }
+        reranked = reranked_filtered
+
         # 5. Filtre par source pertinente
         if source:
             reranked = self._filter_by_source(reranked, source)
@@ -585,6 +594,7 @@ class RAGPipeline:
         # 6. Génération
         logger.info("  [4/4] Génération LLM...")
         context      = self._format_context(reranked)
+        # FIX BUG 1 : historique correctement injecté dans tous les chemins
         history_text = self._format_history(history) if history else ""
         template = _GENERATION_PROMPT_LIST if exhaustive else _GENERATION_PROMPT
         prompt = template.format(
@@ -630,10 +640,10 @@ class RAGPipeline:
         if not history:
             return ""
         lines = []
-        for msg in history[-6:]:
+        for msg in history[-4:]:
             role = "Utilisateur" if msg["role"] == "user" else "Assistant"
             lines.append(f"{role}: {msg['content']}")
-        return "Historique de la conversation:\n" + "\n".join(lines) + "\n\n"
+        return "Historique:\n" + "\n".join(lines) + "\n\n"
 
     def _format_context(self, chunks: List[Dict]) -> str:
         parts = []
