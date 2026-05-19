@@ -465,13 +465,14 @@ class StructuredQueryEngine:
         # On pénalise les colonnes qui décrivent un rôle/fonction, pas un nom.
         NAME_KEYWORDS   = [
             "LIBELLE", "NOM", "INTITULE", "DESIGNATION",
+            "FORMATION", "FORMATIONS", "THEME", "COURS",
             "CHANTIER",   # convention Sonatrach pour nom de service
             "TITRE", "LABEL", "DESCRIPTION",
         ]
         PENALTY_KEYWORDS = [
             "FONCTION", "OBSERVATION", "STATUT", "STATUS",
             "PRENOM", "EMAIL", "TEL", "DATE", "MATRICULE",
-            "GRADE", "CATEGORIE", "NIVEAU",
+            "GRADE", "CATEGORIE", "NIVEAU", "TYPE",
         ]
 
         def _semantic_bonus(col_name: str) -> float:
