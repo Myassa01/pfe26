@@ -11,7 +11,6 @@ from functools import partial
 from typing import Any, Dict, List, Optional
 
 from .state import GraphState
-from ..retrieval.hybrid_search import reciprocal_rank_fusion
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +18,19 @@ logger = logging.getLogger(__name__)
 # PROMPTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = """Tu es un assistant RH. Réponds UNIQUEMENT en français, de façon COURTE et DIRECTE.
+_SYSTEM_PROMPT = """Tu es un assistant RH francophone. Réponds en français de façon claire, concise et factuelle.
 Règles :
 1. Utilise UNIQUEMENT le contexte fourni. Si l'information est absente → "Information non disponible."
-2. N'invente rien. Une seule phrase pour les questions sur une personne ou un poste."""
+2. N'invente rien.
+3. Ne réponds pas avec des procédures ou des détails génériques qui ne figurent pas explicitement dans le contexte.
+4. Pour une question sur une personne ou un poste, réponds avec un énoncé court et précis.
+5. Si tu ne peux pas vérifier la réponse dans le contexte, réponds "Information non disponible."."""
 
 _GENERATION_PROMPT = """<contexte>
 {context}
 </contexte>
+
+Sources du contexte : {sources}
 
 {history}
 <question>
@@ -34,9 +38,31 @@ _GENERATION_PROMPT = """<contexte>
 </question>
 
 INSTRUCTIONS :
-- Si "qui est [NOM]" → "[NOM COMPLET] est [FONCTION]."
-- Si "qui est le [POSTE]" → "Le [POSTE] est [NOM COMPLET]."
-- Une seule phrase. Si non trouvé → "Information non disponible."
+- Réponds en français, en utilisant uniquement les éléments du contexte.
+- Ne rédige pas de réponse générale basée sur des connaissances hors contexte.
+- Si la question porte sur une personne ou un poste : "[NOM COMPLET] est [FONCTION]." ou "Le [POSTE] est [NOM COMPLET]."
+- Si la question demande une procédure, donne les étapes présentes dans le contexte.
+- Si la réponse n'apparaît pas dans le contexte, écris "Information non disponible."
+- Reste concis et précis.
+
+Réponse :"""
+
+_GENERATION_PROMPT_BULLETED = """<contexte>
+{context}
+</contexte>
+
+Sources du contexte : {sources}
+
+{history}
+<question>
+{question}
+</question>
+
+INSTRUCTIONS :
+- Donne une liste numérotée d'étapes courtes et précises, uniquement à partir des informations du contexte.
+- Utilise un style clair et direct avec un seul point par ligne.
+- Ne fournis pas d'explication générale ni de commentaire supplémentaire.
+- Si aucun élément pertinent n'est présent dans le contexte, écris "Information non disponible."
 
 Réponse :"""
 
@@ -44,14 +70,17 @@ _GENERATION_PROMPT_LIST = """<contexte>
 {context}
 </contexte>
 
+Sources du contexte : {sources}
+
 {history}
 <question>
 {question}
 </question>
 
 INSTRUCTIONS :
-- Liste numérotée, un élément par ligne, uniquement les noms présents dans le contexte.
-- Pas d'explication ni de commentaire.
+- Donne une liste numérotée, un élément par ligne, uniquement à partir des informations du contexte.
+- Ne fournis pas d'explication ni de commentaire supplémentaire.
+- Si aucun élément pertinent n'est présent dans le contexte, écris "Information non disponible."
 
 Réponse :"""
 
@@ -71,7 +100,28 @@ def _format_history(history: Optional[List[Dict]]) -> str:
 
 
 def _format_context(chunks: List[Dict]) -> str:
-    return "\n\n---\n\n".join(c["content"] for c in chunks)
+    parts = []
+    for c in chunks:
+        filename = c["metadata"].get("filename", "?")
+        chunk_index = c["metadata"].get("chunk_index")
+        header = f"[source: {filename}]"
+        if chunk_index is not None:
+            header += f" [chunk {chunk_index}]"
+        parts.append(f"{header}\n{c['content']}")
+    return "\n\n---\n\n".join(parts)
+
+
+def _is_procedure_question(question: str) -> bool:
+    q = question.lower().strip()
+    keywords = [
+        "comment", "procédure", "procedure", "étapes", "etapes", "faire", "demande", "demander", "congé", "conge", "protéger", "proteger", "sécurité", "se protéger"
+    ]
+    if q.startswith("comment") or q.startswith("comment faire"):
+        return True
+    for kw in keywords:
+        if kw in q:
+            return True
+    return False
 
 
 def _extract_sources(chunks: List[Dict]) -> List[str]:
@@ -122,6 +172,15 @@ def _filter_by_source(chunks: List[Dict], source: Optional[str]) -> List[Dict]:
     logger.info("  → Filtre source: %d/%d chunks retenus (source: %s)",
                 len(result), len(chunks), source)
     return result
+
+
+def _safe_answer(answer: str) -> str:
+    if not answer or not answer.strip():
+        return "Information non disponible."
+    normalized = answer.strip()
+    if normalized.lower() in {"none", "n/a", "?", "information non disponible"}:
+        return "Information non disponible."
+    return normalized
 
 
 def _extract_primary_value(item: str, source: Optional[str], structured_engine) -> str:
@@ -290,17 +349,31 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         sql_warnings = list(structured.last_warnings)
 
         context      = "\n".join(r["content"] for r in qa_rows[:20])
+        sources      = list({r["metadata"].get("filename", "?") for r in qa_rows})
+        if not context.strip():
+            return {
+                "answer":      "Information non disponible.",
+                "sources":     [],
+                "chunks_used": 0,
+                "warnings":    sql_warnings,
+                "path_taken":  "structured_qa",
+            }
+
         history_text = _format_history(history)
-        prompt = _GENERATION_PROMPT.format(
-            context=context, question=resolved_question, history=history_text,
+        use_bullets = _is_procedure_question(resolved_question)
+        template = _GENERATION_PROMPT_BULLETED if use_bullets else _GENERATION_PROMPT
+        prompt = template.format(
+            context=context,
+            sources=", ".join(sources) if sources else "—",
+            question=resolved_question,
+            history=history_text,
         )
-        answer = llm.generate(
+        answer = _safe_answer(llm.generate(
             prompt=prompt,
             system=_SYSTEM_PROMPT,
             temperature=config.llm_temperature,
             max_tokens=config.llm_max_tokens,
-        )
-        sources = list({r["metadata"].get("filename", "?") for r in qa_rows})
+        ))
         logger.info("  ✅ Structured QA: %d ligne(s) SQL → LLM", len(qa_rows))
         return {
             "answer":      answer,
@@ -313,20 +386,11 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
     # ── 5. retrieve_node ─────────────────────────────────────────────────
 
     def retrieve_node(state: GraphState) -> dict:
+        from ..retrieval.hybrid_search import reciprocal_rank_fusion
+
         intent_data  = state["intent_data"]
         exhaustive   = intent_data.get("exhaustive", False)
         search_query = state["resolved_question"]
-
-        if vector_store.count() == 0:
-            logger.warning("  [retrieve] Vector store vide — aucun document indexé.")
-            return {
-                "search_query":   search_query,
-                "hybrid_results": [],
-                "answer":         "Aucun document n'est encore indexé. Veuillez lancer l'ingestion depuis l'onglet Documents.",
-                "sources":        [],
-                "chunks_used":    0,
-                "path_taken":     "empty_index",
-            }
 
         query_emb = embedder.embed_single(search_query)
 
@@ -339,12 +403,7 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
 
         dense  = vector_store.search(query_emb, k=k_dense)
         sparse = bm25.search(search_query, k=k_sparse)
-        hybrid = reciprocal_rank_fusion(
-            dense, sparse,
-            k=config.rrf_k,
-            dense_weight=config.rrf_dense_weight,
-            sparse_weight=config.rrf_sparse_weight,
-        )
+        hybrid = reciprocal_rank_fusion(dense, sparse, k=config.rrf_k)
 
         logger.info("  [retrieve] Dense: %d | Sparse: %d | RRF: %d",
                     len(dense), len(sparse), len(hybrid))
@@ -356,9 +415,6 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
     # ── 6. rerank_node ───────────────────────────────────────────────────
 
     def rerank_node(state: GraphState) -> dict:
-        if state.get("path_taken") == "empty_index":
-            return {"reranked_chunks": [], "filtered_chunks": []}
-
         intent_data  = state["intent_data"]
         exhaustive   = intent_data.get("exhaustive", False)
         intent       = intent_data.get("intent", "qa")
@@ -395,9 +451,6 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
     # ── 7. generate_node ─────────────────────────────────────────────────
 
     def generate_node(state: GraphState) -> dict:
-        if state.get("path_taken") == "empty_index":
-            return {"context": "", "answer": state.get("answer", ""), "path_taken": "empty_index"}
-
         intent_data       = state["intent_data"]
         exhaustive        = intent_data.get("exhaustive", False)
         resolved_question = state["resolved_question"]
@@ -405,19 +458,31 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         filtered          = state["filtered_chunks"]
 
         context      = _format_context(filtered)
+        sources      = list({c["metadata"].get("filename", "?") for c in filtered})
+        if not context.strip():
+            return {
+                "context":    "",
+                "answer":     "Information non disponible.",
+                "path_taken": "semantic_rag",
+            }
+
         history_text = _format_history(history)
-        template     = _GENERATION_PROMPT_LIST if exhaustive else _GENERATION_PROMPT
-        prompt       = template.format(
-            context=context, question=resolved_question, history=history_text,
+        use_bullets = exhaustive or _is_procedure_question(resolved_question)
+        template = _GENERATION_PROMPT_BULLETED if use_bullets else _GENERATION_PROMPT
+        prompt = template.format(
+            context=context,
+            sources=", ".join(sources) if sources else "—",
+            question=resolved_question,
+            history=history_text,
         )
         max_tokens = config.llm_max_tokens_long if exhaustive else config.llm_max_tokens
 
-        answer = llm.generate(
+        answer = _safe_answer(llm.generate(
             prompt=prompt,
             system=_SYSTEM_PROMPT,
             temperature=config.llm_temperature,
             max_tokens=max_tokens,
-        )
+        ))
         return {
             "context":    context,
             "answer":     answer,
@@ -427,30 +492,14 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
     # ── 8. finalize_node ─────────────────────────────────────────────────
 
     def finalize_node(state: GraphState) -> dict:
-        path = state.get("path_taken")
-
+        path = state.get("path_taken", "semantic_rag")
         if path == "semantic_rag":
             filtered = state.get("filtered_chunks", [])
             sources  = _extract_sources(filtered)
             chunks   = len(filtered)
-        elif path in ("exhaustive", "structured_qa"):
+        else:
             sources = state.get("sources", [])
             chunks  = state.get("chunks_used", 0)
-        elif path == "empty_index":
-            # retrieve_node a court-circuité à cause d'un index vide
-            sources = []
-            chunks  = 0
-        else:
-            # Cas inattendu : tente les deux sources, garde ce qui est disponible
-            filtered = state.get("filtered_chunks", [])
-            if filtered:
-                sources = _extract_sources(filtered)
-                chunks  = len(filtered)
-            else:
-                sources = state.get("sources", [])
-                chunks  = state.get("chunks_used", 0)
-            logger.warning("finalize_node: path_taken inconnu (%r) — fallback heuristique", path)
-
         return {
             "sources":     sources,
             "chunks_used": chunks,
