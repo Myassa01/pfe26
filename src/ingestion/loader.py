@@ -1,10 +1,20 @@
 """Chargement de documents: PDF, DOCX, TXT, MD, HTML, URL."""
 import logging
+import os
 from pathlib import Path
 from typing import List, Dict, Any
 from dataclasses import dataclass
 import urllib.request
 import urllib.parse
+
+# Tags HTML à supprimer avant extraction du texte.
+# Défini une seule fois, partagé par _load_html et scrape_url.
+_HTML_NOISE_TAGS = [
+    "script", "style", "nav", "footer", "header",
+    "aside", "noscript", "iframe", "form", "button",
+    "select", "input", "textarea", "figure", "figcaption",
+    "meta", "link",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -106,9 +116,11 @@ def _load_pdf(path: str) -> str:
             from pdf2image import convert_from_path
             logger.info("PDF '%s' : texte vide, tentative OCR (pytesseract)...", path)
             images = convert_from_path(path, dpi=200)
+            # Langue configurable via OCR_LANG (ex: "fra+eng+ara"). Défaut: "fra+eng".
+            ocr_lang = os.environ.get("OCR_LANG", "fra+eng")
             ocr_pages = []
             for img in images:
-                page_text = pytesseract.image_to_string(img, lang="fra+eng")
+                page_text = pytesseract.image_to_string(img, lang=ocr_lang)
                 if page_text.strip():
                     ocr_pages.append(page_text.strip())
             if ocr_pages:
@@ -128,17 +140,37 @@ def _load_pdf(path: str) -> str:
     return text
 
 
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
 def _load_docx(path: str) -> str:
+    """Extrait le texte d'un DOCX en préservant l'ordre paragraphes + tableaux."""
     from docx import Document as DocxDoc
     doc = DocxDoc(path)
-    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    parts = []
+    for child in doc.element.body:
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag == "p":
+            text = "".join(n.text or "" for n in child.iter() if n.text)
+            if text.strip():
+                parts.append(text.strip())
+        elif tag == "tbl":
+            # Convertit chaque ligne du tableau en "col1 | col2 | col3"
+            for tr in child.iter(f"{{{_W_NS}}}tr"):
+                cells = []
+                for tc in tr.findall(f"{{{_W_NS}}}tc"):
+                    cell_text = "".join(n.text or "" for n in tc.iter() if n.text)
+                    if cell_text.strip():
+                        cells.append(cell_text.strip())
+                if cells:
+                    parts.append(" | ".join(cells))
+    return "\n".join(parts)
 
 
 def _load_html(path: str) -> str:
     from bs4 import BeautifulSoup
     with open(path, encoding="utf-8") as f:
         soup = BeautifulSoup(f.read(), "html.parser")
-    for tag in soup(["script", "style", "nav", "footer"]):
+    for tag in soup(_HTML_NOISE_TAGS):
         tag.decompose()
     return soup.get_text(separator="\n", strip=True)
 
@@ -195,7 +227,7 @@ def scrape_url(url: str, timeout: int = 15) -> Document:
 
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(raw_html, "html.parser")
-    for tag in soup(["script", "style", "nav", "footer", "header"]):
+    for tag in soup(_HTML_NOISE_TAGS):
         tag.decompose()
 
     title = soup.title.string.strip() if soup.title and soup.title.string else parsed.netloc

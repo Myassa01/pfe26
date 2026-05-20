@@ -257,9 +257,18 @@ class IntentRouter:
         samples: Dict[str, List[str]],
         table_name: str,
     ) -> Tuple[Optional[str], Optional[str]]:
+        """Détecte la meilleure colonne de filtre via statistiques pures.
+
+        Une colonne de filtre idéale a :
+        - peu de valeurs distinctes dans les échantillons (faible cardinalité)
+        - des valeurs texte non-numériques de longueur raisonnable
+        - un nom de colonne différent du stem de la table (pas l'identifiant principal)
+        Aucun mot-clé métier hardcodé.
+        """
         best_col: Optional[str] = None
         best_val: Optional[str] = None
         best_score: float = -1.0
+        table_stem = table_name.upper().replace("_", "")
 
         for col in cols:
             vals = [v for v in samples.get(col, []) if v and len(v) >= 2]
@@ -271,19 +280,16 @@ class IntentRouter:
             avg_len = sum(len(v) for v in vals) / len(vals)
             if avg_len > 40 or avg_len < 2:
                 continue
-            col_up = col.upper()
-            bonus = 1.0
-            for kw in ("DIRECTION", "DEPARTEMENT", "SERVICE", "TYPE", "CATEGORIE",
-                       "STATUT", "STATUS", "ACTIVITE", "ZONE", "REGION", "SITE",
-                       "WILAYA", "UNITE", "GROUPE"):
-                if kw in col_up:
-                    bonus = 2.0
-                    break
-            table_stem = table_name.upper().replace("_", "")
-            col_stem   = col_up.replace("_", "")
-            if table_stem in col_stem or col_stem in table_stem:
-                bonus *= 0.5
-            score = bonus / avg_len
+
+            # Prefer columns with few distinct sample values (natural filter columns)
+            n_distinct = len(set(vals))
+            cardinality_score = 1.0 / (1 + n_distinct)
+
+            # Penalize if column name matches table stem (likely the identifier column)
+            col_stem = col.upper().replace("_", "")
+            stem_factor = 0.4 if (table_stem in col_stem or col_stem in table_stem) else 1.0
+
+            score = stem_factor * cardinality_score / (avg_len ** 0.3)
             if score > best_score:
                 best_score = score
                 best_col   = col
@@ -297,25 +303,33 @@ class IntentRouter:
         samples: Dict[str, List[str]],
         exclude: Optional[str] = None,
     ) -> Optional[str]:
-        NAME_KWS = ("NOM", "LIBELLE", "PRENOM", "INTITULE", "DESIGNATION",
-                    "TITRE", "LABEL", "CHANTIER")
+        """Détecte la colonne cible (nom/identifiant) via statistiques pures.
+
+        Préfère la colonne avec les valeurs texte les plus longues et les plus
+        variées — caractéristique d'un champ nom/libellé plutôt qu'un code.
+        Aucun mot-clé métier hardcodé.
+        """
+        best_col: Optional[str] = None
+        best_score: float = -1.0
+
         for col in cols:
             if col == exclude:
                 continue
-            col_up = col.upper()
-            for kw in NAME_KWS:
-                if kw in col_up:
-                    return col
-        for col in cols:
-            if col == exclude:
+            vals = [v for v in samples.get(col, []) if v and len(v) >= 2]
+            if not vals:
                 continue
-            vals = samples.get(col, [])
-            if vals and not all(
-                v.replace(".", "").replace(",", "").replace("-", "").isdigit()
-                for v in vals
-            ):
-                return col
-        return None
+            if all(v.replace(".", "").replace(",", "").replace("-", "").isdigit()
+                   for v in vals):
+                continue
+            avg_len   = sum(len(v) for v in vals) / len(vals)
+            n_distinct = len(set(vals))
+            # Columns with longer, more varied values are better name candidates
+            score = avg_len * n_distinct
+            if score > best_score:
+                best_score = score
+                best_col   = col
+
+        return best_col
 
     @staticmethod
     def _normalize_question(q: str) -> str:

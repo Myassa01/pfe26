@@ -1,18 +1,4 @@
-"""StructuredQueryEngine — interroge les fichiers Excel via DuckDB en mémoire.
-
-Architecture :
-    1. Au démarrage, scanne docs_dir et charge chaque .xlsx dans une table DuckDB.
-    2. Auto-détection de la ligne d'en-tête (réutilise loader._detect_header_row)
-       pour gérer les Excel avec titre/métadonnées avant le tableau.
-    3. Expose des méthodes haut niveau (list_values, filter_rows, count_rows)
-       qui construisent du SQL paramétré — JAMAIS de concaténation directe de
-       valeurs utilisateur dans les requêtes (protection injection SQL).
-
-Pourquoi DuckDB plutôt que pandas / SQLite :
-    - Lecture directe des .xlsx via l'extension `excel` (pas de conversion).
-    - SQL standard, performances excellentes sur dizaines de milliers de lignes.
-    - In-memory par défaut, zéro fichier à gérer.
-"""
+"""StructuredQueryEngine — interroge les fichiers Excel via DuckDB en mémoire."""
 from __future__ import annotations
 
 import logging
@@ -59,12 +45,8 @@ class StructuredQueryEngine:
         import openpyxl
 
         wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
-
-        # Charge la feuille active OU la première feuille non-vide
-        ws = wb.active or wb.worksheets[0]
-    
         try:
-            ws = wb.active
+            ws = wb.active or wb.worksheets[0]
 
             header_row = _detect_header_row(ws)
             headers: List[str] = []
@@ -130,15 +112,22 @@ class StructuredQueryEngine:
             logger.info("  ✓ %s → table %s (%d lignes, %d colonnes)",
                         path.name, sql_table, len(rows), len(unique_headers))
 
+    # Pattern to detect technical/code column names — covers common DB conventions
+    # without any business-domain vocabulary.
+    _TECH_NAME_RE = re.compile(
+        r"^(ID|CODE|CD|NUM|REF|NO|N|NBR|CIN|NIN|MATRICULE|IMMATRICULATION)$"
+        r"|^(ID|CD|NUM|REF|NO|NBR)_"
+        r"|_(ID|CODE|CD|NUM|REF|NO)$",
+        re.IGNORECASE,
+    )
+
     def _detect_technical_columns(self, sql_table: str, columns: List[str], row_count: int) -> set:
         if row_count == 0:
             return set()
         sample_size = min(row_count, 200)
-        techincal_name_hints = {"ID", "CODE", "CD"}
         technical: set = set()
         for col in columns:
-            up = col.upper()
-            if up in techincal_name_hints or up.startswith(("CD_", "ID_", "NUM_")):
+            if self._TECH_NAME_RE.search(col):
                 technical.add(col)
                 continue
             try:
@@ -409,13 +398,7 @@ class StructuredQueryEngine:
         rows = self.list_values(table, column=None, filters=filters, distinct=False)
         return len(rows)
 
-    # ── RECHARGEMENT DYNAMIQUE ────────────────────────────────────────────────
-
     def reload(self, docs_dir: Optional[str] = None) -> int:
-        """Recharge tous les Excel depuis docs_dir dans DuckDB sans redémarrer l'app.
-
-        À appeler après chaque ingestion (pipeline.ingest / ingest_documents).
-        """
         target_dir = docs_dir or self.docs_dir
         self.conn.close()
         import duckdb
@@ -428,26 +411,12 @@ class StructuredQueryEngine:
         return len(self.tables)
 
     def get_primary_column(self, table: str) -> Optional[str]:
-        """Détecte la colonne qui contient le NOM PRINCIPAL de chaque ligne.
+        """Détecte la colonne principale (identifiant/nom) via statistiques pures.
 
-        Stratégie en 3 passes (sans aucun nom de colonne hard-codé) :
-
-        Passe 1 — Mots-clés sémantiques dans le NOM de la colonne
-            On cherche des mots qui signifient "nom" ou "libellé" dans toutes
-            les langues et conventions courantes des Excel RH/entreprise.
-            Une colonne nommée CHANTIER, LIBELLE_SERVICE, NOM_DIRECTION, etc.
-            obtient un bonus fort s'il y a des mots-clés dans son nom.
-            → Évite de choisir FONCTION ou OBSERVATION à la place du libellé.
-
-        Passe 2 — Analyse statistique des valeurs réelles
-            Pour chaque colonne candidate, calcule :
-              - ratio_unique : nb_distinct / nb_lignes  (proche de 1 = chaque
-                ligne a son propre nom → c'est bien un identifiant descriptif)
-              - avg_len : longueur moyenne des valeurs
-            Score = ratio_unique × avg_len × bonus_semantique
-
-        Passe 3 — Fallback
-            Si aucun score positif, retourne la première colonne user.
+        Critères (sans mots-clés hardcodés) :
+        - Ratio d'unicité élevé × longueur moyenne × log(distinct)
+        - Exclut les colonnes dont >70 % des valeurs font ≤5 caractères (codes courts)
+        - Bonus x1.4 si le nom de la colonne contient le stem de la table
         """
         import math
 
@@ -457,53 +426,18 @@ class StructuredQueryEngine:
 
         sql_table  = self.tables[table]["sql_table"]
         user_cols  = self.tables[table].get("user_columns") or self.tables[table]["columns"]
-        row_count  = self.tables[table]["row_count"]
 
         if not user_cols:
             return None
         if len(user_cols) == 1:
             return user_cols[0]
 
-        # ── Passe 1 : bonus sémantique sur le NOM de la colonne ─────────────
-        # Mots qui indiquent "libellé principal" dans les Excel algériens / FR
-        # On teste des sous-chaînes pour couvrir LIBELLE_SERVICE, CHANTIER, etc.
-        # On pénalise les colonnes qui décrivent un rôle/fonction, pas un nom.
-        NAME_KEYWORDS   = [
-            "LIBELLE", "NOM", "INTITULE", "DESIGNATION",
-            "FORMATION", "FORMATIONS", "THEME", "COURS",
-            "CHANTIER",   # convention Sonatrach pour nom de service
-            "TITRE", "LABEL", "DESCRIPTION",
-        ]
-        PENALTY_KEYWORDS = [
-            "FONCTION", "OBSERVATION", "STATUT", "STATUS",
-            "PRENOM", "EMAIL", "TEL", "DATE", "MATRICULE",
-            "GRADE", "CATEGORIE", "NIVEAU", "TYPE",
-        ]
+        table_stem = self._sql_ident(table).replace("_", "").upper()
 
-        def _semantic_bonus(col_name: str) -> float:
-            up = col_name.upper()
-            for kw in PENALTY_KEYWORDS:
-                if kw in up:
-                    return 0.0          # éliminé
-            for kw in NAME_KEYWORDS:
-                if kw in up:
-                    return 2.0          # bonus fort
-            # Le nom de la colonne == nom de la table → c'est souvent le libellé
-            table_stem = table.upper().replace("_", "")
-            col_stem   = up.replace("_", "")
-            if table_stem in col_stem or col_stem in table_stem:
-                return 1.5
-            return 1.0                  # neutre
-
-        # ── Passe 2 : analyse statistique ───────────────────────────────────
         best_col:   Optional[str] = None
         best_score: float = -1.0
 
         for col in user_cols:
-            bonus = _semantic_bonus(col)
-            if bonus == 0.0:
-                continue               # colonne pénalisée → ignorée
-
             try:
                 row = self.conn.execute(
                     f'SELECT COUNT(DISTINCT "{col}"), COUNT("{col}") '
@@ -511,37 +445,33 @@ class StructuredQueryEngine:
                     f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\''
                 ).fetchone()
                 distinct_count, non_null = (row[0], row[1]) if row else (0, 0)
-
                 if distinct_count == 0:
                     continue
 
                 sample = self.conn.execute(
                     f'SELECT "{col}" FROM "{sql_table}" '
-                    f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\' '
-                    f'LIMIT 30'
+                    f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\' LIMIT 30'
                 ).fetchall()
                 vals = [str(r[0]).strip() for r in sample if r[0]]
-
                 if not vals:
                     continue
 
                 avg_len = sum(len(v) for v in vals) / len(vals)
-
-                # Colonnes avec valeurs très courtes → codes, pas des noms
                 if avg_len < 4:
                     continue
 
-                # ratio_unique proche de 1 → chaque ligne a un nom distinct
+                # Ignore columns whose values are mostly short codes (≤5 chars)
+                short_ratio = sum(1 for v in vals if len(v) <= 5) / len(vals)
+                if short_ratio > 0.7:
+                    continue
+
                 ratio_unique = distinct_count / max(non_null, 1)
+                score = ratio_unique * avg_len * math.log1p(distinct_count)
 
-                # Score final
-                score = bonus * ratio_unique * avg_len * math.log1p(distinct_count)
-
-                logger.debug(
-                    "  get_primary_column[%s] col=%s bonus=%.1f ratio=%.2f "
-                    "avg_len=%.1f distinct=%d score=%.1f",
-                    table, col, bonus, ratio_unique, avg_len, distinct_count, score,
-                )
+                # Small boost if column name shares stem with table name
+                col_stem = col.upper().replace("_", "")
+                if table_stem and (table_stem in col_stem or col_stem in table_stem):
+                    score *= 1.4
 
                 if score > best_score:
                     best_score = score
@@ -551,23 +481,13 @@ class StructuredQueryEngine:
                 logger.debug("  get_primary_column: erreur col %s: %s", col, e)
                 continue
 
-        # ── Passe 3 : fallback ───────────────────────────────────────────────
         if best_col is None and user_cols:
             best_col = user_cols[0]
 
         logger.info("get_primary_column(%s) → %s", table, best_col)
         return best_col
 
-
     def get_role_column(self, table: str) -> Optional[str]:
-        """Détecte la colonne de rôle/catégorie via analyse de cardinalité.
-
-        Logique : la colonne de rôle (FONCTION, POSTE, DEPARTEMENT…) a une
-        cardinalité INTERMÉDIAIRE — moins de valeurs distinctes qu'un identifiant
-        (NOM, LIBELLE) mais plus qu'un booléen (ACTIF, STATUT binaire).
-        Cible : 2 ≤ distinct ≤ 50 % des lignes, valeurs texte de longueur ≥ 4.
-        Ne nécessite aucun mot-clé hardcodé.
-        """
         table = self._normalize_stem(table) if table not in self.tables else table
         if table not in self.tables:
             return None
@@ -597,7 +517,6 @@ class StructuredQueryEngine:
                     continue
 
                 cardinality_ratio = distinct_count / max(non_null, 1)
-                # Trop peu (= booléen) ou trop (= identifiant) → pas un rôle
                 if cardinality_ratio > 0.5 or distinct_count > max(row_count * 0.5, 50):
                     continue
 
@@ -607,11 +526,9 @@ class StructuredQueryEngine:
                 ).fetchall()
                 vals    = [str(r[0]).strip() for r in sample if r[0]]
                 avg_len = sum(len(v) for v in vals) / max(len(vals), 1)
-                # Trop court → code ou sigle, pas un libellé de rôle
                 if avg_len < 4:
                     continue
 
-                # Score : favorise cardinalité intermédiaire (idéal ~10-30 valeurs)
                 score = avg_len / (1 + abs(distinct_count - 15))
                 if score > best_score:
                     best_score = score
@@ -629,12 +546,6 @@ class StructuredQueryEngine:
         question: str,
         max_results: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Recherche par mots-clés de la question dans toutes les colonnes de la table.
-
-        Retourne les lignes correspondantes AVEC la donnée brute (raw_row) dans les
-        métadonnées — permet un formatage dynamique sans LLM.
-        Stop words universels : mots courts (< 3 chars) + liste FR/EN commune.
-        """
         table = self._normalize_stem(table) if table not in self.tables else table
         if table not in self.tables:
             return []
@@ -643,23 +554,25 @@ class StructuredQueryEngine:
         meta_filename = self.tables[table]["filename"]
         user_cols     = self.tables[table].get("user_columns") or self.tables[table]["columns"]
 
-        # Stop words universels (FR + EN) — mots trop courants pour discriminer
+        # Only grammatical/functional words — no domain or role vocabulary.
+        # Role words (chef, directeur…) are intentionally kept as search tokens
+        # so they can match relevant rows in any business domain.
         _STOP = {
-            # Question words FR
+            # Interrogatifs
             "qui", "quel", "quelle", "quels", "quelles", "comment",
             "pourquoi", "combien", "quand", "lequel", "laquelle",
-            # Articles & prépositions FR
+            # Articles / déterminants
             "le", "la", "les", "un", "une", "des", "du",
+            "mon", "ton", "son", "ma", "ta", "sa", "mes", "tes", "ses",
+            # Prépositions
             "de", "dans", "par", "pour", "sur", "avec", "sans",
-            "en", "au", "aux", "vers", "entre", "parmi", "selon",
-            # Verbes courants FR
+            "en", "au", "aux", "vers", "entre", "parmi", "selon", "sous",
+            # Conjonctions / adverbes
+            "et", "ou", "mais", "donc", "car", "si",
+            # Verbes d'état
             "est", "sont", "etait", "avoir", "etre", "fait",
-            # Titres génériques (présents dans quasi toutes les lignes)
-            "chef", "responsable", "directeur", "directrice",
-            "adjoint", "adjjointe", "assistant", "assistante",
-            "monsieur", "madame", "mr", "mme",
-            # EN
-            "the", "and", "for", "with", "from", "who", "what",
+            # Anglais fonctionnel
+            "the", "and", "for", "with", "from", "who", "what", "is", "are",
         }
 
         tokens = [
@@ -706,15 +619,15 @@ class StructuredQueryEngine:
                 "metadata": {
                     "filename": meta_filename,
                     "table":    table,
-                    "raw_row":  raw_row,   # données brutes pour formatage dynamique
+                    "raw_row":  raw_row,
                 },
             })
 
         logger.info("keyword_search(%s, %r) → %d résultat(s)", table, tokens, len(results))
         return results
 
-
     def close(self) -> None:
         try:
             self.conn.close()
-        except Exception
+        except Exception:
+            pass

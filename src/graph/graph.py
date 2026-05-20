@@ -1,8 +1,5 @@
 """
 build_rag_graph() — construit et compile le StateGraph LangGraph.
-
-Appelé une fois dans RAGPipeline.__init__() après l'initialisation
-de tous les composants. Stocké dans self._graph et invoqué dans query().
 """
 import logging
 from functools import partial
@@ -17,22 +14,6 @@ logger = logging.getLogger(__name__)
 
 
 def build_rag_graph(components: Dict[str, Any]):
-    """
-    Construit et compile le graphe LangGraph.
-
-    Parameters
-    ----------
-    components : dict
-        Instances des composants du pipeline. Clés requises :
-        query_transformer, intent_router, embedder, vector_store,
-        bm25, reranker, llm, structured, schema, config
-
-    Returns
-    -------
-    CompiledGraph
-        Graphe LangGraph compilé qui accepte un GraphState en entrée
-        et retourne un GraphState final.
-    """
     nodes      = build_nodes(components)
     schema     = components["schema"]
     structured = components["structured"]
@@ -42,7 +23,6 @@ def build_rag_graph(components: Dict[str, Any]):
     builder = StateGraph(GraphState)
 
     # Enregistrement des nœuds
-
     builder.add_node("contextualize",        nodes["contextualize_node"])
     builder.add_node("intent",               nodes["intent_node"])
     builder.add_node("structured_qa_direct", nodes["structured_qa_direct_node"])
@@ -53,16 +33,6 @@ def build_rag_graph(components: Dict[str, Any]):
     builder.add_node("generate",             nodes["generate_node"])
     builder.add_node("finalize",             nodes["finalize_node"])
 
-    builder.add_node("contextualize", nodes["contextualize_node"])
-    builder.add_node("intent",        nodes["intent_node"])
-    builder.add_node("exhaustive",    nodes["exhaustive_node"])
-    builder.add_node("structured_qa", nodes["structured_qa_node"])
-    builder.add_node("retrieve",      nodes["retrieve_node"])
-    builder.add_node("rerank",        nodes["rerank_node"])
-    builder.add_node("generate",      nodes["generate_node"])
-    builder.add_node("finalize",      nodes["finalize_node"])
-
-
     # Arêtes linéaires
     builder.add_edge(START, "contextualize")
     builder.add_edge("contextualize", "intent")
@@ -72,16 +42,10 @@ def build_rag_graph(components: Dict[str, Any]):
         "intent",
         _route,
         {
-
             "exhaustive_path":           "exhaustive",
             "structured_qa_path":        "structured_qa",
             "structured_qa_direct_path": "structured_qa_direct",
             "rag_path":                  "retrieve",
-
-            "exhaustive_path":    "exhaustive",
-            "structured_qa_path": "structured_qa",
-            "rag_path":           "retrieve",
-
         },
     )
 
@@ -91,13 +55,10 @@ def build_rag_graph(components: Dict[str, Any]):
     # Chemin B : structured_qa → finalize → END
     builder.add_edge("structured_qa", "finalize")
 
-
-    # Chemin D : structured_qa_direct → finalize → END
+    # Chemin C : structured_qa_direct → finalize → END
     builder.add_edge("structured_qa_direct", "finalize")
 
-
-
-    # Chemin C : retrieve → rerank → generate → finalize → END
+    # Chemin D : retrieve → rerank → generate → finalize → END
     builder.add_edge("retrieve", "rerank")
     builder.add_edge("rerank",   "generate")
     builder.add_edge("generate", "finalize")
@@ -109,6 +70,3 @@ def build_rag_graph(components: Dict[str, Any]):
     logger.info("LangGraph: graphe RAG compilé avec succès.")
 
     return compiled
-
-    return compiled
-
