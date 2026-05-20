@@ -261,7 +261,7 @@ def route_node(state: GraphState, schema: Dict[str, dict], structured) -> str:
         return "structured_qa_path"
 
 
-    # Chemin D : QA sur Excel sans filtre → keyword search SQL direct (sans LLM)
+    # Chemin D : QA sur Excel avec source identifiée → keyword search SQL direct (sans LLM)
     # Contourne la distorsion des noms propres par les petits modèles.
     if (
         not exhaustive
@@ -272,6 +272,15 @@ def route_node(state: GraphState, schema: Dict[str, dict], structured) -> str:
     ):
         return "structured_qa_direct_path"
 
+    # Chemin D' : QA sans source identifiée → essaie toutes les tables Excel.
+    # Le nœud structured_qa_direct gère la recherche multi-tables et le fallback RAG.
+    if (
+        not exhaustive
+        and source is None
+        and intent_data.get("intent") == "qa"
+        and bool(structured.tables)
+    ):
+        return "structured_qa_direct_path"
 
     # Chemin C : RAG sémantique
     return "rag_path"
@@ -324,7 +333,28 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         resolved_question = state["resolved_question"]
         source            = intent_data.get("source")
 
-        rows = structured.keyword_search(source, resolved_question, max_results=3)
+        # ── Recherche principale dans la table identifiée ─────────────────
+        rows: list = []
+        if source and structured.has_table(source):
+            rows = structured.keyword_search(source, resolved_question, max_results=3)
+
+        # ── Fallback multi-tables si source vide ou aucun résultat ────────
+        # Cherche dans toutes les tables Excel et retourne la plus pertinente.
+        if not rows:
+            best_rows: list = []
+            best_table: Optional[str] = source
+            for table_name in structured.tables:
+                if table_name == source:
+                    continue
+                t_rows = structured.keyword_search(table_name, resolved_question, max_results=2)
+                if len(t_rows) > len(best_rows):
+                    best_rows  = t_rows
+                    best_table = table_name
+            if best_rows:
+                rows   = best_rows
+                source = best_table
+                logger.info("  [direct] Source inconnue → table trouvée par fallback: %s", source)
+
         if not rows:
             return {
                 "answer":      "Information non disponible.",
@@ -340,7 +370,8 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
             if raw_row
             else rows[0]["content"].split("] ", 1)[-1]
         )
-        logger.info("  ✅ Structured QA Direct: %d ligne(s) SQL → sans LLM", len(rows))
+        logger.info("  ✅ Structured QA Direct: %d ligne(s) SQL → sans LLM [table=%s]",
+                    len(rows), source)
         return {
             "answer":      answer,
             "sources":     sources,

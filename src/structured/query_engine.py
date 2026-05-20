@@ -546,6 +546,13 @@ class StructuredQueryEngine:
         question: str,
         max_results: int = 5,
     ) -> List[Dict[str, Any]]:
+        """Recherche par mots-clés dans une table DuckDB.
+
+        Stratégie en deux phases :
+        1. AND : tous les tokens doivent matcher → précision maximale.
+        2. OR pondéré : fallback si AND échoue ; chaque ligne est scorée par
+           la rareté de ses tokens correspondants (moins fréquent = plus spécifique).
+        """
         table = self._normalize_stem(table) if table not in self.tables else table
         if table not in self.tables:
             return []
@@ -554,13 +561,13 @@ class StructuredQueryEngine:
         meta_filename = self.tables[table]["filename"]
         user_cols     = self.tables[table].get("user_columns") or self.tables[table]["columns"]
 
-        # Only grammatical/functional words — no domain or role vocabulary.
-        # Role words (chef, directeur…) are intentionally kept as search tokens
-        # so they can match relevant rows in any business domain.
+        # Mots vides grammaticaux uniquement — aucun vocabulaire métier hardcodé.
         _STOP = {
-            # Interrogatifs
+            # Interrogatifs / relatifs
             "qui", "quel", "quelle", "quels", "quelles", "comment",
-            "pourquoi", "combien", "quand", "lequel", "laquelle",
+            "pourquoi", "combien", "quand", "lequel", "laquelle", "que", "qu",
+            # Démonstratifs
+            "ce", "cet", "cette", "ces", "ceci", "cela",
             # Articles / déterminants
             "le", "la", "les", "un", "une", "des", "du",
             "mon", "ton", "son", "ma", "ta", "sa", "mes", "tes", "ses",
@@ -575,38 +582,84 @@ class StructuredQueryEngine:
             "the", "and", "for", "with", "from", "who", "what", "is", "are",
         }
 
-        tokens = [
-            t for t in re.split(r"[\s\-_/,;]+", self._fold(question))
-            if len(t) >= 3 and t not in _STOP
-        ]
+        # Tokenisation : supprime la ponctuation avant le filtrage
+        raw_tokens = re.split(r"[\s\-_/,;:!?.]+", self._fold(question))
+        tokens = [t for t in raw_tokens if len(t) >= 3 and t not in _STOP]
 
         if not tokens:
             return []
 
         select_clause = ", ".join(f'"{c}"' for c in user_cols)
-        or_parts: List[str] = []
-        params:   List[str] = []
-        for col in user_cols:
-            for token in tokens:
-                or_parts.append(
-                    f'strip_accents(LOWER(CAST("{col}" AS VARCHAR))) '
-                    f'LIKE strip_accents(LOWER(?))'
-                )
-                params.append(f"%{token}%")
 
-        if not or_parts:
-            return []
+        # ── Phase 1 : AND — tous les tokens doivent matcher dans la ligne ──
+        and_conds: List[str] = []
+        and_params: List[str] = []
+        for token in tokens:
+            col_or = " OR ".join(
+                f'strip_accents(LOWER(CAST("{col}" AS VARCHAR))) LIKE strip_accents(LOWER(?))'
+                for col in user_cols
+            )
+            and_conds.append(f"({col_or})")
+            and_params.extend([f"%{token}%"] * len(user_cols))
 
-        sql = (
-            f'SELECT {select_clause} FROM "{sql_table}" '
-            f'WHERE {" OR ".join(or_parts)} '
-            f'LIMIT {max_results}'
-        )
         try:
-            rows = self.conn.execute(sql, params).fetchall()
+            rows = self.conn.execute(
+                f'SELECT {select_clause} FROM "{sql_table}" '
+                f'WHERE {" AND ".join(and_conds)} LIMIT {max_results}',
+                and_params,
+            ).fetchall()
         except Exception as e:
-            logger.warning("keyword_search: SQL échoué (%s)", e)
-            return []
+            logger.warning("keyword_search AND échoué (%s), fallback OR+score", e)
+            rows = []
+
+        # ── Phase 2 : OR pondéré par rareté si AND ne donne rien ──────────
+        if not rows:
+            or_parts: List[str] = []
+            or_params: List[str] = []
+            for col in user_cols:
+                for token in tokens:
+                    or_parts.append(
+                        f'strip_accents(LOWER(CAST("{col}" AS VARCHAR))) LIKE strip_accents(LOWER(?))'
+                    )
+                    or_params.append(f"%{token}%")
+
+            try:
+                candidates = self.conn.execute(
+                    f'SELECT {select_clause} FROM "{sql_table}" '
+                    f'WHERE {" OR ".join(or_parts)} LIMIT {max_results * 6}',
+                    or_params,
+                ).fetchall()
+            except Exception as e:
+                logger.warning("keyword_search OR échoué (%s)", e)
+                return []
+
+            # Poids = rareté du token (1 / nb_lignes_correspondantes)
+            # Plus le token est rare → plus il est discriminant.
+            token_weights: Dict[str, float] = {}
+            for token in tokens:
+                col_or = " OR ".join(
+                    f'strip_accents(LOWER(CAST("{col}" AS VARCHAR))) LIKE strip_accents(LOWER(?))'
+                    for col in user_cols
+                )
+                try:
+                    count = self.conn.execute(
+                        f'SELECT COUNT(*) FROM "{sql_table}" WHERE {col_or}',
+                        [f"%{token}%"] * len(user_cols),
+                    ).fetchone()[0]
+                except Exception:
+                    count = 1
+                token_weights[token] = 1.0 / max(count, 1)
+
+            scored: List[tuple] = []
+            for row in candidates:
+                raw_row = {c: str(v).strip() if v is not None else ""
+                           for c, v in zip(user_cols, row)}
+                row_text = self._fold(" ".join(raw_row.values()))
+                score = sum(w for t, w in token_weights.items() if t in row_text)
+                scored.append((score, row, raw_row))
+
+            scored.sort(key=lambda x: -x[0])
+            rows = [s[1] for s in scored[:max_results]]
 
         results: List[Dict[str, Any]] = []
         for row in rows:
