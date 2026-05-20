@@ -1,0 +1,14 @@
+pandas
+openpyxl
+duckdb
+fastapi
+uvicorn
+chromadb
+sentence-transformers
+rank-bm25
+pypdf
+python-docx
+beautifulsoup4
+pyngrok
+requests
+langgraph>=0.2.0,<0.3.0
