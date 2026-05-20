@@ -20,6 +20,7 @@ def _load_excel(path: str) -> str:
     return "\n\n".join(d.content for d in docs)
 
 
+<<<<<<< HEAD
 def _detect_header_row(ws, max_scan: int = 20) -> int:
     """Détecte la ligne d'en-tête parmi les max_scan premières lignes.
 
@@ -29,6 +30,11 @@ def _detect_header_row(ws, max_scan: int = 20) -> int:
     """
     best_row   = 1
     best_count = 0
+=======
+def _detect_header_row(ws, max_scan: int = 10) -> int:
+    """Détecte la ligne d'en-tête : 1ère ligne avec ≥2 cellules texte non-numériques.
+    Permet de gérer les Excel avec titre/métadonnées avant le tableau (ex: KAM_Formations_GTP)."""
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
     for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=max_scan, values_only=True), 1):
         text_cells = 0
         for v in row:
@@ -39,6 +45,7 @@ def _detect_header_row(ws, max_scan: int = 20) -> int:
                 continue
             try:
                 float(s.replace(",", "."))
+<<<<<<< HEAD
             except ValueError:
                 text_cells += 1
         # Strictement supérieur : préfère la première ligne maximale
@@ -46,6 +53,14 @@ def _detect_header_row(ws, max_scan: int = 20) -> int:
             best_count = text_cells
             best_row   = row_idx
     return best_row if best_count >= 2 else 1
+=======
+                continue  # numérique → pas un header
+            except ValueError:
+                text_cells += 1
+        if text_cells >= 2:
+            return row_idx
+    return 1
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 
 
 def load_excel_as_documents(path: str) -> List[Document]:
@@ -97,6 +112,7 @@ def _load_pdf(path: str) -> str:
     from pypdf import PdfReader
     reader = PdfReader(path)
     pages = [page.extract_text() or "" for page in reader.pages]
+<<<<<<< HEAD
     text  = "\n\n".join(p for p in pages if p.strip())
 
     if not text.strip():
@@ -126,6 +142,9 @@ def _load_pdf(path: str) -> str:
             logger.warning("  ✗ OCR échoué pour '%s' : %s", path, e)
 
     return text
+=======
+    return "\n\n".join(p for p in pages if p.strip())
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 
 
 def _load_docx(path: str) -> str:

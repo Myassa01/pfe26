@@ -39,7 +39,10 @@ Sources du contexte : {sources}
 
 INSTRUCTIONS :
 - Réponds en français, en utilisant uniquement les éléments du contexte.
+<<<<<<< HEAD
 - Si l'historique de conversation est présent, utilise-le pour résoudre les références implicites ("son poste", "il", "ce département", etc.).
+=======
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 - Ne rédige pas de réponse générale basée sur des connaissances hors contexte.
 - Si la question porte sur une personne ou un poste : "[NOM COMPLET] est [FONCTION]." ou "Le [POSTE] est [NOM COMPLET]."
 - Si la question demande une procédure, donne les étapes présentes dans le contexte.
@@ -112,6 +115,20 @@ def _format_context(chunks: List[Dict]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+<<<<<<< HEAD
+=======
+def _is_procedure_question(question: str) -> bool:
+    q = question.lower().strip()
+    keywords = [
+        "comment", "procédure", "procedure", "étapes", "etapes", "faire", "demande", "demander", "congé", "conge", "protéger", "proteger", "sécurité", "se protéger"
+    ]
+    if q.startswith("comment") or q.startswith("comment faire"):
+        return True
+    for kw in keywords:
+        if kw in q:
+            return True
+    return False
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 
 
 def _extract_sources(chunks: List[Dict]) -> List[str]:
@@ -173,6 +190,7 @@ def _safe_answer(answer: str) -> str:
     return normalized
 
 
+<<<<<<< HEAD
 def _build_structured_answer(raw_row: Dict[str, str], table: str, engine) -> str:
     """Formate une ligne SQL en réponse lisible — zéro mot-clé hardcodé.
 
@@ -203,6 +221,8 @@ def _build_structured_answer(raw_row: Dict[str, str], table: str, engine) -> str
     return " | ".join(f"{k}: {v}" for k, v in clean.items())
 
 
+=======
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 def _extract_primary_value(item: str, source: Optional[str], structured_engine) -> str:
     content = item
     if "] " in content and content.startswith("["):
@@ -248,7 +268,11 @@ def route_node(state: GraphState, schema: Dict[str, dict], structured) -> str:
             if structured.has_table(source):
                 return "exhaustive_path"
 
+<<<<<<< HEAD
     # Chemin B : QA structurée avec filtre → SQL + LLM
+=======
+    # Chemin B : QA structurée → SQL + LLM
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
     if (
         not exhaustive
         and source
@@ -258,6 +282,7 @@ def route_node(state: GraphState, schema: Dict[str, dict], structured) -> str:
     ):
         return "structured_qa_path"
 
+<<<<<<< HEAD
     # Chemin D : QA sur Excel sans filtre → keyword search SQL direct (sans LLM)
     # Contourne la distorsion des noms propres par les petits modèles.
     if (
@@ -269,6 +294,8 @@ def route_node(state: GraphState, schema: Dict[str, dict], structured) -> str:
     ):
         return "structured_qa_direct_path"
 
+=======
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
     # Chemin C : RAG sémantique
     return "rag_path"
 
@@ -311,6 +338,7 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         intent_data = intent_router.classify(state["resolved_question"])
         return {"intent_data": intent_data}
 
+<<<<<<< HEAD
     # ── 3a. structured_qa_direct_node ────────────────────────────────────
     # QA sur Excel sans filtre : keyword search DuckDB → formatage direct, sans LLM.
 
@@ -343,6 +371,8 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
             "path_taken":  "structured_qa_direct",
         }
 
+=======
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
     # ── 3. exhaustive_node ────────────────────────────────────────────────
 
     def exhaustive_node(state: GraphState) -> dict:
@@ -434,8 +464,13 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         history_text = _format_history(history)
+<<<<<<< HEAD
         use_bullets  = intent_data.get("intent") == "detail"
         template     = _GENERATION_PROMPT_BULLETED if use_bullets else _GENERATION_PROMPT
+=======
+        use_bullets = _is_procedure_question(resolved_question)
+        template = _GENERATION_PROMPT_BULLETED if use_bullets else _GENERATION_PROMPT
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
         prompt = template.format(
             context=context,
             sources=", ".join(sources) if sources else "—",
@@ -541,7 +576,11 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         history_text = _format_history(history)
+<<<<<<< HEAD
         use_bullets = exhaustive or intent_data.get("intent") == "detail"
+=======
+        use_bullets = exhaustive or _is_procedure_question(resolved_question)
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
         template = _GENERATION_PROMPT_BULLETED if use_bullets else _GENERATION_PROMPT
         prompt = template.format(
             context=context,
@@ -580,6 +619,7 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     return {
+<<<<<<< HEAD
         "contextualize_node":          contextualize_node,
         "intent_node":                 intent_node,
         "structured_qa_direct_node":   structured_qa_direct_node,
@@ -590,3 +630,14 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         "generate_node":               generate_node,
         "finalize_node":               finalize_node,
     }
+=======
+        "contextualize_node":   contextualize_node,
+        "intent_node":          intent_node,
+        "exhaustive_node":      exhaustive_node,
+        "structured_qa_node":   structured_qa_node,
+        "retrieve_node":        retrieve_node,
+        "rerank_node":          rerank_node,
+        "generate_node":        generate_node,
+        "finalize_node":        finalize_node,
+    }
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000

@@ -59,9 +59,13 @@ class StructuredQueryEngine:
         import openpyxl
 
         wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+
         # Charge la feuille active OU la première feuille non-vide
         ws = wb.active or wb.worksheets[0]
+    
         try:
+            ws = wb.active
+
             header_row = _detect_header_row(ws)
             headers: List[str] = []
             for cell in ws[header_row]:
@@ -554,6 +558,7 @@ class StructuredQueryEngine:
         logger.info("get_primary_column(%s) → %s", table, best_col)
         return best_col
 
+
     def get_role_column(self, table: str) -> Optional[str]:
         """Détecte la colonne de rôle/catégorie via analyse de cardinalité.
 
@@ -708,8 +713,8 @@ class StructuredQueryEngine:
         logger.info("keyword_search(%s, %r) → %d résultat(s)", table, tokens, len(results))
         return results
 
+
     def close(self) -> None:
         try:
             self.conn.close()
-        except Exception:
-            pass
+        except Exception

@@ -274,6 +274,7 @@ class RAGPipeline:
 
         elapsed = round(time.time() - start, 2)
 
+<<<<<<< HEAD
         resolved = final_state.get("resolved_question", question)
         return {
             "question":          question,
@@ -285,4 +286,15 @@ class RAGPipeline:
             "elapsed_seconds":   elapsed,
             "intent":            final_state.get("intent_data", {}),
             "warnings":          final_state.get("warnings", []),
+=======
+        return {
+            "question":        question,
+            "search_query":    final_state.get("search_query", question),
+            "answer":          final_state.get("answer", ""),
+            "sources":         final_state.get("sources", []),
+            "chunks_used":     final_state.get("chunks_used", 0),
+            "elapsed_seconds": elapsed,
+            "intent":          final_state.get("intent_data", {}),
+            "warnings":        final_state.get("warnings", []),
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
         }

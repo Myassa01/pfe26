@@ -106,6 +106,7 @@ def chunk_document(
     if not content:
         return []
 
+<<<<<<< HEAD
     # Métadonnées communes (préserve tout ce que le loader a mis)
     base_meta = {
         "source":    doc.metadata["source"],
@@ -117,13 +118,26 @@ def chunk_document(
         if key in doc.metadata:
             base_meta[key] = doc.metadata[key]
 
+=======
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
     # Court-circuit : si le document est déjà plus petit que chunk_size, pas de découpage
     if count_fn(content) <= chunk_size:
         chunk_id = _make_chunk_id(doc, 0)
         return [Chunk(
             id=chunk_id,
             content=content,
+<<<<<<< HEAD
             metadata={**base_meta, "chunk_index": 0, "chunk_total": 1, "chunk_id": chunk_id},
+=======
+            metadata={
+                "source": doc.metadata["source"],
+                "filename": doc.metadata["filename"],
+                "extension": doc.metadata["extension"],
+                "chunk_index": 0,
+                "chunk_total": 1,
+                "chunk_id": chunk_id,
+            },
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
         )]
 
     separators = ["\n\n", "\n", ". ", "! ", "? ", "; ", " "]
@@ -138,7 +152,18 @@ def chunk_document(
         chunks.append(Chunk(
             id=chunk_id,
             content=text.strip(),
+<<<<<<< HEAD
             metadata={**base_meta, "chunk_index": i, "chunk_total": len(texts), "chunk_id": chunk_id},
+=======
+            metadata={
+                "source": doc.metadata["source"],
+                "filename": doc.metadata["filename"],
+                "extension": doc.metadata["extension"],
+                "chunk_index": i,
+                "chunk_total": len(texts),
+                "chunk_id": chunk_id,
+            },
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
         ))
     return chunks
 

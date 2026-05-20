@@ -1,7 +1,22 @@
 #!/usr/bin/env python3
+<<<<<<< HEAD
 import sys, os, json, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+=======
+import sys, os, json, shutil, logging, traceback, types
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Patch : langchain-core peut chercher langchain.debug qui n'existe pas si
+# le package `langchain` n'est pas installé (on n'utilise que langchain-core).
+if "langchain" not in sys.modules:
+    _lc_stub = types.ModuleType("langchain")
+    _lc_stub.debug = False
+    sys.modules["langchain"] = _lc_stub
+
+logger = logging.getLogger(__name__)
+
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Depends, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,7 +25,10 @@ from typing import List, Optional
 from config import config
 from auth import init_db, login, verify_token, revoke_token, create_user, list_users, update_user, delete_user ,save_history, get_history, delete_history
 from cv_analyzer import extract_cv_text, analyze_cv_with_pipeline
+<<<<<<< HEAD
 from cv_ranker import rank_candidates, get_ranking_table
+=======
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 from src.pipeline import RAGPipeline
 from src.ingestion.loader import scrape_url
 
@@ -137,6 +155,10 @@ def query_endpoint(req: QuestionRequest, user: dict = Depends(get_current_user))
         )
         return result
     except Exception as e:
+<<<<<<< HEAD
+=======
+        logger.error("Erreur /query:\n%s", traceback.format_exc())
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
         raise HTTPException(500, str(e))
 
 
@@ -224,6 +246,7 @@ async def cv_analyze(
     except RuntimeError as e:
         raise HTTPException(500, str(e))
 
+<<<<<<< HEAD
 @app.post("/cv-rank")
 async def cv_rank(
     files: List[UploadFile] = File(...),
@@ -292,6 +315,8 @@ async def cv_rank(
     except Exception as e:
         raise HTTPException(500, f"Erreur classement : {str(e)}")
 
+=======
+>>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 @app.post("/lien")
 def add_liens(req: LienRequest, background_tasks: BackgroundTasks, admin: dict = Depends(require_superadmin)):
     existing = _load_links(); added = [u for u in req.urls if u not in existing]; _save_links(existing + added)
