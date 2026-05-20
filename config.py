@@ -38,12 +38,6 @@ class Config:
     top_k_sparse: int = 20  # ↑ augmenté (BM25 fort sur les noms propres)
     top_k_after_rerank: int = 5
     rrf_k: int = 60
-<<<<<<< HEAD
-=======
-    # Poids RRF : BM25 légèrement favorisé pour les noms propres RH
-    rrf_dense_weight: float = 0.4
-    rrf_sparse_weight: float = 0.6
->>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 
     # ── Mode exhaustif (questions de type "liste-moi tout") ─────────────────
     # En mode exhaustif, on utilise un top-k élargi au lieu d'un seuil de score,
@@ -51,11 +45,7 @@ class Config:
     # difficiles à calibrer avec un seuil fixe.
     max_chunks_exhaustive: int = 200
     # max_tokens élevé pour les réponses longues (listes, tableaux)
-<<<<<<< HEAD
     llm_max_tokens_long: int = 1536
-=======
-    llm_max_tokens_long: int = 1024
->>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 
     # ── Validation LLM par batches (filtre les résultats d'extraction directe) ──
     # Active une étape de filtrage : les éléments extraits sont passés au LLM

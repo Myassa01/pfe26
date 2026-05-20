@@ -39,7 +39,6 @@ Question autonome :"""
 # Indicateurs d'une question qui dépend du contexte précédent
 _CONTEXT_TRIGGERS = re.compile(
     r"\b(ces|ceux|celles|leur|leurs|il|elle|ils|elles|eux|"
-<<<<<<< HEAD
     r"les m[eê]mes|ce d[eé]partement|cette personne|ces personnes|"
     r"ces deux|ces 2|celui-ci|celle-ci|ce dernier|cette derni[eè]re|"
     r"parmi eux|parmi elles|de ces|d'eux|"
@@ -52,12 +51,6 @@ _CONTEXT_TRIGGERS = re.compile(
     r"^et\s|^aussi\s|^qu'en est-il"
     r")\b",
     re.IGNORECASE | re.MULTILINE,
-=======
-    r"les m[eê]mes|ce département|cette personne|ces personnes|"
-    r"ces deux|ces 2|celui-ci|celle-ci|ce dernier|cette derni[eè]re|"
-    r"parmi eux|parmi elles|de ces|d'eux)\b",
-    re.IGNORECASE,
->>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 )
 
 

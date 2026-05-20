@@ -57,11 +57,7 @@ class SchemaDiscovery:
         try:
             import openpyxl
             wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
-<<<<<<< HEAD
             ws = wb.active or wb.worksheets[0]
-=======
-            ws = wb.active
->>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
             header_row = _detect_header_row(ws)
             headers: List[str] = [
                 str(cell.value).strip() if cell.value else ""
@@ -108,11 +104,7 @@ Format JSON attendu (strict, une seule ligne) :
 
 Règles STRICTES :
 - "intent":"list"   → énumération ("liste", "tous", "donne-moi les", "quels sont", "combien").
-<<<<<<< HEAD
 - "intent":"detail" → explication ou procédure pas à pas ("explique", "détails", "décris", "comment", "comment faire", "procédure", "étapes", "démarche").
-=======
-- "intent":"detail" → explication ("explique", "détails", "décris").
->>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
 - "intent":"qa"     → question ciblée ("qui est", "quel est", "quelle est", "qui sont").
 - "source"  : EXACTEMENT un nom de table parmi la liste ci-dessus, ou null.
 - "column"  : null pour "qa" et "list" (on retourne toute la ligne).

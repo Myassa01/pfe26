@@ -28,8 +28,4 @@ class GraphState(TypedDict, total=False):
     chunks_used: int
     elapsed_seconds: float
     warnings: List[str]
-<<<<<<< HEAD
     path_taken: str  # "exhaustive" | "structured_qa" | "semantic_rag"
-=======
-    path_taken: str  # "exhaustive" | "structured_qa" | "semantic_rag" | "empty_index"
->>>>>>> 523536e19cd5c29d340be65ba01ccf0c173c0000
