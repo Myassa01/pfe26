@@ -190,7 +190,6 @@ class RAGPipeline:
         self.bm25.add_documents(bm25_docs)
         self.bm25.save(self.config.bm25_index_path)
 
-        # ── Recharge DuckDB + schéma sans redémarrer l'app ──────────────────
         self.structured.reload(docs_dir)
         self.schema = self._build_combined_schema(docs_dir)
         self.intent_router = IntentRouter(llm=self.llm, schema=self.schema)
@@ -238,7 +237,6 @@ class RAGPipeline:
         self.bm25.add_documents(bm25_docs)
         self.bm25.save(self.config.bm25_index_path)
 
-        # ── Recharge DuckDB + schéma sans redémarrer l'app ──────────────────
         self.structured.reload(self.config.docs_dir)
         self.schema = self._build_combined_schema(self.config.docs_dir)
         self.intent_router = IntentRouter(llm=self.llm, schema=self.schema)
@@ -274,8 +272,8 @@ class RAGPipeline:
 
         elapsed = round(time.time() - start, 2)
 
-
         resolved = final_state.get("resolved_question", question)
+
         return {
             "question":          question,
             "resolved_question": resolved if resolved != question else None,
@@ -286,15 +284,4 @@ class RAGPipeline:
             "elapsed_seconds":   elapsed,
             "intent":            final_state.get("intent_data", {}),
             "warnings":          final_state.get("warnings", []),
-
-        return {
-            "question":        question,
-            "search_query":    final_state.get("search_query", question),
-            "answer":          final_state.get("answer", ""),
-            "sources":         final_state.get("sources", []),
-            "chunks_used":     final_state.get("chunks_used", 0),
-            "elapsed_seconds": elapsed,
-            "intent":          final_state.get("intent_data", {}),
-            "warnings":        final_state.get("warnings", []),
-
         }
