@@ -466,7 +466,12 @@ class StructuredQueryEngine:
                     continue
 
                 ratio_unique = distinct_count / max(non_null, 1)
-                score = ratio_unique * avg_len * math.log1p(distinct_count)
+
+                # Penalise very long values (job titles, descriptions) — names are
+                # typically short (4–15 chars). Quadratic penalty beyond 15 chars
+                # ensures NOM/PRENOM columns beat FONCTION/POSTE columns.
+                effective_len = avg_len if avg_len <= 15 else 15.0 * (15.0 / avg_len) ** 2
+                score = ratio_unique * effective_len * math.log1p(distinct_count)
 
                 # Small boost if column name shares stem with table name
                 col_stem = col.upper().replace("_", "")
@@ -516,10 +521,6 @@ class StructuredQueryEngine:
                 if distinct_count < 2 or non_null == 0:
                     continue
 
-                cardinality_ratio = distinct_count / max(non_null, 1)
-                if cardinality_ratio > 0.5 or distinct_count > max(row_count * 0.5, 50):
-                    continue
-
                 sample = self.conn.execute(
                     f'SELECT "{col}" FROM "{sql_table}" '
                     f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\' LIMIT 10'
@@ -529,7 +530,19 @@ class StructuredQueryEngine:
                 if avg_len < 4:
                     continue
 
-                score = avg_len / (1 + abs(distinct_count - 15))
+                cardinality_ratio = distinct_count / max(non_null, 1)
+                # Skip: high cardinality + short values → IDs, codes, short names.
+                # Allow: high cardinality + long values → unique job titles/functions.
+                if cardinality_ratio > 0.5 and avg_len < 12:
+                    continue
+
+                # Low-cardinality repeating roles get a small cardinality bonus.
+                # Unique long titles (CHEF DE DEPARTEMENT…) are slightly penalised
+                # but still score higher than short status fields (CONFIRME, OUI…).
+                if cardinality_ratio <= 0.5:
+                    score = avg_len * (1.0 - cardinality_ratio * 0.5)
+                else:
+                    score = avg_len * 0.4
                 if score > best_score:
                     best_score = score
                     best_col   = col
