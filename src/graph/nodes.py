@@ -175,6 +175,55 @@ def _safe_answer(answer: str) -> str:
 
 
 
+def _format_structured_answer(raw_row: Dict[str, str]) -> str:
+    """Formate une ligne Excel en réponse courte, sans LLM.
+
+    - Cache les codes courts (ex: DTC, DRH — pas utiles à l'utilisateur).
+    - Combine NOM + PRENOM en un nom complet si les colonnes existent.
+    - Affiche la colonne FONCTION/POSTE en second.
+    - Fallback : 3 valeurs les plus longues (heuristique : plus long = plus informatif).
+    """
+    def _is_short_code(v: str) -> bool:
+        s = v.strip()
+        return len(s) <= 5 and s.upper() == s and s.replace("-", "").isalpha()
+
+    clean = {
+        k: v.strip()
+        for k, v in raw_row.items()
+        if v and str(v).strip() and not _is_short_code(str(v).strip())
+    }
+    if not clean:
+        return " | ".join(f"{k}: {v}" for k, v in raw_row.items() if v)
+
+    nom = prenom = fonction = None
+    for k, v in clean.items():
+        ku = k.upper()
+        if ku in ("NOM", "LASTNAME", "FAMILY_NAME", "NAME"):
+            nom = v
+        elif ku in ("PRENOM", "FIRSTNAME", "FIRST_NAME", "GIVEN_NAME"):
+            prenom = v
+        elif any(x in ku for x in ("FONC", "POSTE", "EMPLOI", "TITRE", "GRADE")):
+            if not fonction or len(v) > len(fonction):
+                fonction = v
+
+    parts: List[str] = []
+    if prenom and nom:
+        parts.append(f"{prenom} {nom}")
+    elif nom:
+        parts.append(nom)
+    elif prenom:
+        parts.append(prenom)
+    if fonction:
+        parts.append(fonction)
+
+    if parts:
+        return " — ".join(parts)
+
+    # Fallback : 3 valeurs les plus longues (tables sans colonnes NOM/PRENOM/FONCTION)
+    sorted_items = sorted(clean.items(), key=lambda x: len(x[1]), reverse=True)[:3]
+    return " | ".join(f"{k}: {v}" for k, v in sorted_items)
+
+
 def _extract_primary_value(item: str, source: Optional[str], structured_engine) -> str:
     content = item
     if "] " in content and content.startswith("["):
@@ -340,11 +389,7 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         sources = list({r["metadata"].get("filename", "?") for r in rows})
         raw_row = rows[0]["metadata"].get("raw_row", {})
         if raw_row:
-            # Affiche toutes les colonnes non-vides : format "Colonne: Valeur | ..."
-            # On évite toute tentative de deviner quelle colonne est "le nom" ou "le rôle"
-            # car cela produit des réponses incorrectes sur des tables à structure variée.
-            pairs  = [f"{k}: {v}" for k, v in raw_row.items() if v and str(v).strip()]
-            answer = " | ".join(pairs) if pairs else rows[0]["content"].split("] ", 1)[-1]
+            answer = _format_structured_answer(raw_row)
         else:
             answer = rows[0]["content"].split("] ", 1)[-1]
         logger.info("  ✅ Structured QA Direct: %d ligne(s) SQL → sans LLM [table=%s]",

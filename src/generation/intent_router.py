@@ -136,9 +136,11 @@ class IntentRouter:
         logger.info("IntentRouter: %d source(s) dans le schéma (%s)",
                     len(schema), ", ".join(schema.keys()))
 
-    # Patterns de questions QA directes — structure grammaticale, pas vocabulaire métier.
+    # Patterns de questions QA directes — SINGULIER uniquement.
+    # "qui est X" / "quel est X" → toujours une question ciblée (qa).
+    # "quels sont" / "qui sont" → souvent une liste → NE PAS forcer qa.
     _QA_RE = re.compile(
-        r"\b(qui est|qui sont|quel est|quelle est|quels sont|quelles sont"
+        r"\b(qui est|quel est|quelle est"
         r"|qu.est.ce que|qu.est.ce qui"
         r"|who is|what is|which is)\b",
         re.IGNORECASE,
