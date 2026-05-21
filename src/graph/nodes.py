@@ -371,13 +371,7 @@ def _extract_primary_value(item: str, source: Optional[str], structured_engine) 
             if entity_candidates:
                 return max(entity_candidates, key=len)
 
-        # Priority 2 : colonne entité (valeurs longues = noms d'entités, intitulés)
-        entity_col = structured_engine.get_entity_column(source)
-        if entity_col:
-            val = pairs.get(entity_col.upper())
-            if val and len(val) > 2:
-                return val
-
+    # Fallback : valeur la plus longue = nom d'entité (SERVICE MECANIQUE > KEDDAR)
     best = max(pairs.values(), key=lambda v: len(v), default=item)
     return best if len(best) > 2 else item
 
@@ -558,16 +552,6 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         #     Avec column=None, on retourne "INTITULE_DE_LA_FORMATION: XYZ | STATUT: Obligatoire"
         query_column = None if filt else column
 
-        # Auto-détection de la colonne entité quand aucune colonne n'est précisée et
-        # pas de filtre : évite de renvoyer toutes les lignes et de tomber sur des
-        # noms de personnes au lieu des noms d'entités (services, directions…).
-        # Ex : "quels sont les services?" → SELECT DISTINCT NOM_SERVICE au lieu de *
-        if not filt and not query_column and structured.has_table(source):
-            auto_col = structured.get_entity_column(source)
-            if auto_col:
-                query_column = auto_col
-                logger.info("  [exhaustive] Colonne entité auto-détectée : %s", auto_col)
-
         direct = structured.list_values(
             table=source, column=query_column, filters=filt, distinct=True,
         )
@@ -594,30 +578,27 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
 
         # ── Nettoyage post-extraction ─────────────────────────────────────
         # Si la valeur contient le stem de la table APRÈS un préfixe
-        # (ex : "CHEF DE DEPARTEMENT TECHNIQUE" → stem "DEPARTEMENT" à idx>0),
-        # on extrait à partir du stem. Les valeurs sans le stem sont exclues
-        # (ce sont des non-entités : "CHARGE D'ETUDES", "RESPONSABLE CELLULE"…).
-        # Pour SERVICE/DIRECTION, le stem est déjà en position 0 → inchangé.
+        # (ex : "CHEF DE DEPARTEMENT TECHNIQUE" → "DEPARTEMENT TECHNIQUE"),
+        # on supprime ce préfixe. Les entrées sans le stem sont conservées
+        # telles quelles (ex : "RESPONSABLE SECURITE" dans DIRECTION).
         source_stem = source.upper() if source else ""
         if source_stem and len(source_stem) >= 5:
-            extracted: list = []
+            processed: list = []
             for name in unique_names:
                 idx = name.upper().find(source_stem)
-                if idx == 0:
-                    extracted.append(name)           # déjà propre
-                elif idx > 0:
-                    extracted.append(name[idx:].strip())   # retire le préfixe
-                # idx == -1 → valeur sans le stem → exclue
-            if extracted:
-                # Re-déduplique après extraction (ex: deux titres → même DEPARTEMENT)
-                seen2: set = set()
-                clean: list = []
-                for n in extracted:
-                    k = _fold(n)
-                    if k not in seen2:
-                        seen2.add(k)
-                        clean.append(n)
-                unique_names = clean
+                if idx > 0:
+                    processed.append(name[idx:].strip())   # retire le préfixe
+                else:
+                    processed.append(name)   # déjà propre (idx=0) ou sans stem (idx=-1)
+            # Re-déduplique après transformation (deux préfixes différents → même entité)
+            seen2: set = set()
+            clean: list = []
+            for n in processed:
+                k = _fold(n)
+                if k not in seen2:
+                    seen2.add(k)
+                    clean.append(n)
+            unique_names = clean
 
         prefix_lines = []
         if sql_warnings:
