@@ -174,36 +174,6 @@ def _safe_answer(answer: str) -> str:
 
 
 
-def _build_structured_answer(raw_row: Dict[str, str], table: str, engine) -> str:
-    """Formate une ligne SQL en réponse lisible — zéro mot-clé hardcodé.
-
-    Utilise deux analyses statistiques sur les données réelles :
-    1. get_primary_column() → colonne identifiant (ratio unique élevé)
-    2. get_role_column()    → colonne catégorie/rôle (cardinalité intermédiaire)
-    3. Fallback longueur   → valeur la plus longue si aucune colonne détectée
-    """
-    clean = {k: str(v).strip().rstrip(".") for k, v in raw_row.items() if v and str(v).strip()}
-    if not clean:
-        return "Information non disponible."
-
-    primary_col = engine.get_primary_column(table)
-    primary_val = clean.get(primary_col, "") if primary_col else ""
-
-    role_col = engine.get_role_column(table)
-    role_val = clean.get(role_col, "") if role_col else ""
-
-    if primary_val and role_val and primary_val.lower() != role_val.lower():
-        return f"{primary_val} est {role_val}."
-
-    # Fallback : tri par longueur (libellé le plus long = nom principal)
-    sorted_vals = sorted(clean.values(), key=len, reverse=True)
-    if len(sorted_vals) >= 2 and sorted_vals[0].lower() != sorted_vals[1].lower():
-        return f"{sorted_vals[0]} — {sorted_vals[1]}"
-    if sorted_vals:
-        return sorted_vals[0]
-    return " | ".join(f"{k}: {v}" for k, v in clean.items())
-
-
 
 def _extract_primary_value(item: str, source: Optional[str], structured_engine) -> str:
     content = item
@@ -356,20 +326,27 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
                 logger.info("  [direct] Source inconnue → table trouvée par fallback: %s", source)
 
         if not rows:
+            # Aucun résultat dans aucune table Excel → demande un fallback vers RAG.
+            # La réponse peut se trouver dans un PDF/DOCX.
+            logger.info("  [direct] Aucun résultat dans les tables Excel → fallback RAG")
             return {
-                "answer":      "Information non disponible.",
-                "sources":     [],
-                "chunks_used": 0,
-                "path_taken":  "structured_qa_direct",
+                "needs_rag_fallback": True,
+                "answer":             "",
+                "sources":            [],
+                "chunks_used":        0,
+                "path_taken":         "structured_qa_direct",
             }
 
         sources = list({r["metadata"].get("filename", "?") for r in rows})
         raw_row = rows[0]["metadata"].get("raw_row", {})
-        answer  = (
-            _build_structured_answer(raw_row, source, structured)
-            if raw_row
-            else rows[0]["content"].split("] ", 1)[-1]
-        )
+        if raw_row:
+            # Affiche toutes les colonnes non-vides : format "Colonne: Valeur | ..."
+            # On évite toute tentative de deviner quelle colonne est "le nom" ou "le rôle"
+            # car cela produit des réponses incorrectes sur des tables à structure variée.
+            pairs  = [f"{k}: {v}" for k, v in raw_row.items() if v and str(v).strip()]
+            answer = " | ".join(pairs) if pairs else rows[0]["content"].split("] ", 1)[-1]
+        else:
+            answer = rows[0]["content"].split("] ", 1)[-1]
         logger.info("  ✅ Structured QA Direct: %d ligne(s) SQL → sans LLM [table=%s]",
                     len(rows), source)
         return {

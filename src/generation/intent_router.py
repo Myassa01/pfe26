@@ -136,6 +136,14 @@ class IntentRouter:
         logger.info("IntentRouter: %d source(s) dans le schéma (%s)",
                     len(schema), ", ".join(schema.keys()))
 
+    # Patterns de questions QA directes — structure grammaticale, pas vocabulaire métier.
+    _QA_RE = re.compile(
+        r"\b(qui est|qui sont|quel est|quelle est|quels sont|quelles sont"
+        r"|qu.est.ce que|qu.est.ce qui"
+        r"|who is|what is|which is)\b",
+        re.IGNORECASE,
+    )
+
     def classify(self, question: str) -> dict:
         key = self._normalize_question(question)
         if key in self._cache:
@@ -161,6 +169,11 @@ class IntentRouter:
 
         parsed = self._parse_json(raw)
         result = self._validate(parsed) if parsed else self._fallback()
+
+        # Sanity check : si la question a une structure "qui est / quel est",
+        # elle ne peut jamais être une liste exhaustive — le LLM se trompe parfois.
+        result = self._sanity_check(result, question)
+
         logger.info(
             "IntentRouter: intent=%s source=%s column=%s exhaustive=%s filter=%s",
             result["intent"], result["source"], result["column"],
@@ -171,6 +184,23 @@ class IntentRouter:
         if len(self._cache) > self._cache_size:
             self._cache.popitem(last=False)
 
+        return result
+
+    def _sanity_check(self, result: dict, question: str) -> dict:
+        """Corrige les erreurs de classification évidentes du LLM.
+
+        Règle : "qui est X", "quel est X" → toujours intent=qa, jamais exhaustive.
+        """
+        if self._QA_RE.search(question):
+            if result["intent"] != "qa" or result.get("exhaustive"):
+                logger.info(
+                    "  [sanity] %s → qa forcé (structure QA détectée): %r",
+                    result["intent"], question[:80],
+                )
+                result = dict(result)
+                result["intent"]     = "qa"
+                result["exhaustive"] = False
+                result["filter"]     = None
         return result
 
     def _build_schema_block(self, schema: Dict[str, dict]) -> str:

@@ -571,13 +571,19 @@ class StructuredQueryEngine:
             # Articles / déterminants
             "le", "la", "les", "un", "une", "des", "du",
             "mon", "ton", "son", "ma", "ta", "sa", "mes", "tes", "ses",
+            "nos", "vos", "leur", "leurs",
+            # Contractions / élisions
+            "d", "l", "j", "m", "n", "s", "t", "y", "c",
             # Prépositions
             "de", "dans", "par", "pour", "sur", "avec", "sans",
             "en", "au", "aux", "vers", "entre", "parmi", "selon", "sous",
+            "dont", "lors", "dès", "des", "chez", "hors",
             # Conjonctions / adverbes
-            "et", "ou", "mais", "donc", "car", "si",
-            # Verbes d'état
-            "est", "sont", "etait", "avoir", "etre", "fait",
+            "et", "ou", "mais", "donc", "car", "si", "or", "ni",
+            "bien", "aussi", "tres", "plus", "moins", "tout", "tous",
+            # Verbes d'état / courants
+            "est", "sont", "etait", "etaient", "avoir", "etre", "fait",
+            "peut", "doit", "faut", "a", "ont", "va", "vas",
             # Anglais fonctionnel
             "the", "and", "for", "with", "from", "who", "what", "is", "are",
         }

@@ -29,3 +29,4 @@ class GraphState(TypedDict, total=False):
     elapsed_seconds: float
     warnings: List[str]
     path_taken: str  # "exhaustive" | "structured_qa" | "semantic_rag"
+    needs_rag_fallback: bool  # True si structured_qa_direct n'a rien trouvé → RAG

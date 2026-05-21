@@ -55,10 +55,18 @@ def build_rag_graph(components: Dict[str, Any]):
     # Chemin B : structured_qa → finalize → END
     builder.add_edge("structured_qa", "finalize")
 
-    # Chemin C : structured_qa_direct → finalize → END
-    builder.add_edge("structured_qa_direct", "finalize")
+    # Chemin D/D' : structured_qa_direct → finalize (si résultat trouvé)
+    #                                     → retrieve  (si aucun résultat Excel → fallback RAG)
+    def _route_after_direct(state: GraphState) -> str:
+        return "retrieve" if state.get("needs_rag_fallback") else "finalize"
 
-    # Chemin D : retrieve → rerank → generate → finalize → END
+    builder.add_conditional_edges(
+        "structured_qa_direct",
+        _route_after_direct,
+        {"retrieve": "retrieve", "finalize": "finalize"},
+    )
+
+    # Chemin C (RAG) : retrieve → rerank → generate → finalize → END
     builder.add_edge("retrieve", "rerank")
     builder.add_edge("rerank",   "generate")
     builder.add_edge("generate", "finalize")
