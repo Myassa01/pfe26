@@ -698,6 +698,84 @@ class StructuredQueryEngine:
         logger.info("keyword_search(%s, %r) → %d résultat(s)", table, tokens, len(results))
         return results
 
+    def get_entity_column(self, table: str) -> Optional[str]:
+        """Colonne la plus représentative pour lister les entités d'une table.
+
+        Contrairement à get_primary_column() qui préfère les valeurs courtes
+        (noms de personnes), cette méthode préfère les valeurs longues et uniques
+        (intitulés, désignations, noms d'entités).
+        Utilisée exclusivement par le chemin exhaustif (listes).
+        """
+        import math
+
+        table = self._normalize_stem(table) if table not in self.tables else table
+        if table not in self.tables:
+            return None
+
+        sql_table  = self.tables[table]["sql_table"]
+        user_cols  = self.tables[table].get("user_columns") or self.tables[table]["columns"]
+
+        if not user_cols:
+            return None
+        if len(user_cols) == 1:
+            return user_cols[0]
+
+        table_stem = self._sql_ident(table).replace("_", "").upper()
+
+        best_col:   Optional[str] = None
+        best_score: float = -1.0
+
+        for col in user_cols:
+            try:
+                row = self.conn.execute(
+                    f'SELECT COUNT(DISTINCT "{col}"), COUNT("{col}") '
+                    f'FROM "{sql_table}" '
+                    f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\''
+                ).fetchone()
+                distinct_count, non_null = (row[0], row[1]) if row else (0, 0)
+                if distinct_count < 2:
+                    continue
+
+                sample = self.conn.execute(
+                    f'SELECT "{col}" FROM "{sql_table}" '
+                    f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\' LIMIT 30'
+                ).fetchall()
+                vals = [str(r[0]).strip() for r in sample if r[0]]
+                if not vals:
+                    continue
+
+                avg_len = sum(len(v) for v in vals) / len(vals)
+                if avg_len < 5:
+                    continue
+
+                # Ignore les colonnes à valeurs courtes (codes, abréviations ≤ 6 chars)
+                short_ratio = sum(1 for v in vals if len(v) <= 6) / len(vals)
+                if short_ratio > 0.6:
+                    continue
+
+                ratio_unique = distinct_count / max(non_null, 1)
+                # Formule originale sans pénalité longueur → favorise les longs intitulés
+                score = ratio_unique * avg_len * math.log1p(distinct_count)
+
+                # Boost fort si le nom de colonne contient le stem de la table
+                col_stem = col.upper().replace("_", "")
+                if table_stem and len(table_stem) >= 5 and \
+                        (table_stem in col_stem or col_stem in table_stem):
+                    score *= 3.0
+
+                if score > best_score:
+                    best_score = score
+                    best_col   = col
+
+            except Exception:
+                continue
+
+        if best_col is None and user_cols:
+            best_col = user_cols[0]
+
+        logger.info("get_entity_column(%s) → %s", table, best_col)
+        return best_col
+
     def close(self) -> None:
         try:
             self.conn.close()

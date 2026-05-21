@@ -371,10 +371,10 @@ def _extract_primary_value(item: str, source: Optional[str], structured_engine) 
             if entity_candidates:
                 return max(entity_candidates, key=len)
 
-        # Priority 2 : colonne principale statistique (identifiant de personne)
-        primary_col = structured_engine.get_primary_column(source)
-        if primary_col:
-            val = pairs.get(primary_col.upper())
+        # Priority 2 : colonne entité (valeurs longues = noms d'entités, intitulés)
+        entity_col = structured_engine.get_entity_column(source)
+        if entity_col:
+            val = pairs.get(entity_col.upper())
             if val and len(val) > 2:
                 return val
 
