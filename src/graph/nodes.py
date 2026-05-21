@@ -356,6 +356,22 @@ def _extract_primary_value(item: str, source: Optional[str], structured_engine) 
         return item
 
     if source and structured_engine.has_table(source):
+        # Priority 1 : colonne dont le nom contient le stem de la table
+        # → colonne entité (NOM_DEPARTEMENT, DIRECTION, NOM_SERVICE…).
+        # En cas de plusieurs candidats, préfère la valeur la plus longue
+        # (les noms d'entités sont plus longs que les noms de personnes).
+        table_stem = source.upper().replace("_", "")
+        if len(table_stem) >= 5:
+            entity_candidates = [
+                v for k, v in pairs.items()
+                if k != "__RAW__"
+                and (table_stem in k.replace("_", "") or k.replace("_", "") in table_stem)
+                and len(v) > 3
+            ]
+            if entity_candidates:
+                return max(entity_candidates, key=len)
+
+        # Priority 2 : colonne principale statistique (identifiant de personne)
         primary_col = structured_engine.get_primary_column(source)
         if primary_col:
             val = pairs.get(primary_col.upper())
