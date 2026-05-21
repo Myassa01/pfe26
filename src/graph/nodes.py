@@ -592,6 +592,33 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
                 seen.add(key)
                 unique_names.append(name)
 
+        # ── Nettoyage post-extraction ─────────────────────────────────────
+        # Si la valeur contient le stem de la table APRÈS un préfixe
+        # (ex : "CHEF DE DEPARTEMENT TECHNIQUE" → stem "DEPARTEMENT" à idx>0),
+        # on extrait à partir du stem. Les valeurs sans le stem sont exclues
+        # (ce sont des non-entités : "CHARGE D'ETUDES", "RESPONSABLE CELLULE"…).
+        # Pour SERVICE/DIRECTION, le stem est déjà en position 0 → inchangé.
+        source_stem = source.upper() if source else ""
+        if source_stem and len(source_stem) >= 5:
+            extracted: list = []
+            for name in unique_names:
+                idx = name.upper().find(source_stem)
+                if idx == 0:
+                    extracted.append(name)           # déjà propre
+                elif idx > 0:
+                    extracted.append(name[idx:].strip())   # retire le préfixe
+                # idx == -1 → valeur sans le stem → exclue
+            if extracted:
+                # Re-déduplique après extraction (ex: deux titres → même DEPARTEMENT)
+                seen2: set = set()
+                clean: list = []
+                for n in extracted:
+                    k = _fold(n)
+                    if k not in seen2:
+                        seen2.add(k)
+                        clean.append(n)
+                unique_names = clean
+
         prefix_lines = []
         if sql_warnings:
             prefix_lines.append("⚠ Note :")
