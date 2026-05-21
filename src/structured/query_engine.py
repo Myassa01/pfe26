@@ -621,12 +621,14 @@ class StructuredQueryEngine:
             and_conds.append(f"({col_or})")
             and_params.extend([f"%{token}%"] * len(user_cols))
 
+        _and_matched = False
         try:
             rows = self.conn.execute(
                 f'SELECT {select_clause} FROM "{sql_table}" '
                 f'WHERE {" AND ".join(and_conds)} LIMIT {max_results}',
                 and_params,
             ).fetchall()
+            _and_matched = len(rows) > 0
         except Exception as e:
             logger.warning("keyword_search AND échoué (%s), fallback OR+score", e)
             rows = []
@@ -689,9 +691,10 @@ class StructuredQueryEngine:
             results.append({
                 "content":  f"[{table}] " + " | ".join(pairs),
                 "metadata": {
-                    "filename": meta_filename,
-                    "table":    table,
-                    "raw_row":  raw_row,
+                    "filename":  meta_filename,
+                    "table":     table,
+                    "raw_row":   raw_row,
+                    "and_match": _and_matched,
                 },
             })
 

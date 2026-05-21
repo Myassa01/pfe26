@@ -489,20 +489,31 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
 
         # ── Fallback multi-tables si source vide ou aucun résultat ────────
         # Cherche dans toutes les tables Excel et retourne la plus pertinente.
+        # Priorité : AND match (tous les tokens présents) > OR match (partiel).
+        # Ex : "chef departement technique" → DEPARTEMENT (AND) gagne sur
+        #      FORMATION (OR sur "technique" seulement).
         if not rows:
             best_rows: list = []
             best_table: Optional[str] = source
+            best_is_and = False
             for table_name in structured.tables:
                 if table_name == source:
                     continue
                 t_rows = structured.keyword_search(table_name, resolved_question, max_results=2)
-                if len(t_rows) > len(best_rows):
+                if not t_rows:
+                    continue
+                t_is_and = any(r["metadata"].get("and_match", False) for r in t_rows)
+                # AND match bat toujours un OR match ; à égalité, plus de résultats gagne
+                if (t_is_and and not best_is_and) or \
+                   (t_is_and == best_is_and and len(t_rows) > len(best_rows)):
                     best_rows  = t_rows
                     best_table = table_name
+                    best_is_and = t_is_and
             if best_rows:
                 rows   = best_rows
                 source = best_table
-                logger.info("  [direct] Source inconnue → table trouvée par fallback: %s", source)
+                logger.info("  [direct] Source inconnue → table trouvée par fallback: %s (and=%s)",
+                            source, best_is_and)
 
         if not rows:
             # Aucun résultat dans aucune table Excel → demande un fallback vers RAG.
