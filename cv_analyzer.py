@@ -265,6 +265,44 @@ Bonne adéquation
 Excellente adéquation
 
 ════════════════════════════════════════
+RÈGLES POUR LE POSTE RECOMMANDÉ
+════════════════════════════════════════
+
+Le POSTE RECOMMANDÉ doit être basé UNIQUEMENT
+sur le domaine réel du CV.
+
+NE JAMAIS recopier automatiquement le poste demandé.
+
+Si le candidat est incompatible avec le poste cible :
+- proposer un poste cohérent avec son vrai domaine
+- OU écrire "Aucun poste informatique recommandé"
+
+Exemples obligatoires :
+
+CV comptabilité
+→ "Comptable"
+→ jamais "Développeur informatique"
+
+CV soudage
+→ "Soudeur industriel"
+→ jamais "Ingénieur développement informatique"
+
+CV lettres / langues
+→ "Assistant administratif"
+→ jamais "Développeur"
+
+CV HSE
+→ "Ingénieur HSE"
+
+CV juridique
+→ "Juriste"
+
+Si aucun poste Sonatrach pertinent :
+→ écrire "Non pertinent pour les postes informatiques"
+
+Le POSTE RECOMMANDÉ doit refléter
+le VRAI métier du candidat.
+════════════════════════════════════════
 FORMAT DE RÉPONSE OBLIGATOIRE
 ════════════════════════════════════════
 
@@ -282,7 +320,9 @@ FORMAT DE RÉPONSE OBLIGATOIRE
 - point 2
 - point 3
 
-**POSTE RECOMMANDÉ** : poste le plus cohérent avec le vrai profil
+**POSTE RECOMMANDÉ** :
+- poste réellement compatible avec le CV
+- OU "Non pertinent pour ce poste"
 
 **ANNÉES_EXPÉRIENCE** : entier ou -1
 **ANNÉE_DIPLOME** : année ou 0
