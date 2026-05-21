@@ -249,6 +249,23 @@ class RAGPipeline:
             "embedding_dim": int(embeddings.shape[1]),
         }
 
+    # ── RECHARGEMENT EXCEL SEUL ──────────────────────────────────────────────
+
+    def reload_structured(self) -> Dict[str, Any]:
+        """Recharge uniquement DuckDB depuis docs_dir.
+
+        Utilise cette méthode quand un fichier Excel est ajouté ou modifié
+        sans vouloir relancer une ingestion RAG complète (coûteuse).
+        """
+        n = self.structured.reload(self.config.docs_dir)
+        self.schema = self._build_combined_schema(self.config.docs_dir)
+        self.intent_router = IntentRouter(llm=self.llm, schema=self.schema)
+        with self._graph_lock:
+            self._graph = self._build_graph()
+        tables = list(self.structured.tables.keys())
+        logger.info("reload_structured: %d table(s) chargée(s) → %s", n, tables)
+        return {"tables_loaded": n, "table_names": tables}
+
     # ── QUERY ────────────────────────────────────────────────────────────────
 
     def query(

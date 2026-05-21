@@ -175,79 +175,151 @@ def _safe_answer(answer: str) -> str:
 
 
 
-def _format_structured_answer(raw_row: Dict[str, str]) -> str:
-    """Formate une ligne Excel en réponse courte, sans LLM."""
-    _NOM_EXCL = {"DEPARTEMENT", "DIRECTION", "SERVICE", "CHANTIER",
-                 "CHEF", "COMPLET", "ORGANISME", "ENTREPRISE"}
+def _format_structured_answer(
+    raw_row: Dict[str, str],
+    table: Optional[str] = None,
+    engine=None,
+) -> str:
+    """Formate une ligne Excel en réponse courte, sans LLM.
+
+    CHEMIN 1 — engine disponible (prioritaire) :
+      Détection 100 % statistique via DuckDB, aucun mot-clé hardcodé.
+      - get_primary_column() → identifie le champ principal (nom, identifiant…)
+        en se basant sur l'unicité et la longueur moyenne des valeurs.
+      - get_role_column()    → identifie le champ rôle/fonction en se basant
+        sur la cardinalité et la longueur des valeurs.
+      - Pour les noms split NOM + PRENOM : cherche la colonne "compagne"
+        (haute unicité, valeur courte, proche dans l'ordre des colonnes).
+
+    CHEMIN 2 — sans engine (fallback uniquement) :
+      Heuristiques sur les noms de colonnes. Utilisé seulement si DuckDB
+      n'est pas disponible (ex : appel depuis un contexte hors pipeline).
+    """
+    def _up(v: str) -> str:
+        return v.strip().upper()
 
     def _is_short_code(v: str) -> bool:
-        # Code technique court (DTC, DRH…) : ≤ 3 chars tout en majuscules.
-        # Seuil abaissé à 3 pour ne PAS filtrer les prénoms courts (ALI, AMR…).
         s = v.strip()
         return len(s) <= 3 and s.upper() == s and s.replace("-", "").isalpha()
 
-    def _upper_name(v: str) -> str:
-        return v.strip().upper()
-
-    # Toutes les cellules non-vides — PAS de filtre short_code ici,
-    # pour ne pas perdre les prénoms courts dans les colonnes NOM/PRENOM.
     all_cells = {k: str(v).strip() for k, v in raw_row.items() if v and str(v).strip()}
     if not all_cells:
         return " | ".join(f"{k}: {v}" for k, v in raw_row.items() if v)
 
+    # ══════════════════════════════════════════════════════════════════════
+    # CHEMIN 1 : détection statistique (engine disponible)
+    # ══════════════════════════════════════════════════════════════════════
+    if engine and table and engine.has_table(table):
+        primary_col = engine.get_primary_column(table)
+        role_col    = engine.get_role_column(table)
+        user_cols   = (engine.tables[table].get("user_columns")
+                       or engine.tables[table]["columns"])
+
+        primary_val = (all_cells.get(primary_col) or "").strip()
+        role_val    = (all_cells.get(role_col)    or "").strip()
+
+        # ── Détection NOM + PRENOM : si la valeur principale est courte,
+        #    cherche une colonne "compagne" (haute unicité, valeur courte).
+        #    Aucun nom de colonne hardcodé — on compare uniquement les stats.
+        name_val = primary_val
+        if primary_val and len(primary_val) < 15 and not _is_short_code(primary_val):
+            p_idx = user_cols.index(primary_col) if primary_col in user_cols else 99
+            companion_col: Optional[str] = None
+            best_score = 0.0
+
+            for col in user_cols:
+                if col in (primary_col, role_col):
+                    continue
+                val = (all_cells.get(col) or "").strip()
+                # Valeur doit être non-vide, courte (prénom/nom), pas un code
+                if not val or _is_short_code(val) or len(val) > 20:
+                    continue
+                c_idx     = user_cols.index(col) if col in user_cols else 99
+                # Score = proximité dans l'ordre des colonnes × brièveté de la valeur
+                proximity = 1.0 / (1.0 + abs(c_idx - p_idx))
+                brevity   = 1.0 if len(val) <= 12 else 0.4
+                score     = proximity * brevity
+                if score > best_score:
+                    best_score    = score
+                    companion_col = col
+
+            if companion_col and best_score >= 0.25:
+                companion_val = (all_cells.get(companion_col) or "").strip()
+                c_idx = user_cols.index(companion_col) if companion_col in user_cols else 99
+                # Respecte l'ordre des colonnes pour PRENOM NOM ou NOM PRENOM
+                if c_idx < p_idx:
+                    name_val = f"{companion_val} {primary_val}"
+                else:
+                    name_val = f"{primary_val} {companion_val}"
+
+        parts: List[str] = []
+        if name_val and not _is_short_code(name_val):
+            parts.append(_up(name_val))
+        if role_val and not _is_short_code(role_val):
+            parts.append(_up(role_val))
+        if parts:
+            return " — ".join(parts)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CHEMIN 2 : heuristiques colonnes (fallback sans engine)
+    # ══════════════════════════════════════════════════════════════════════
+
+    # Exclusion NOM_* construite depuis les noms de colonnes présents
+    _nom_excl: set = set()
+    for k in raw_row:
+        for part in re.split(r"[_\s]+", k.upper().strip()):
+            if len(part) >= 5 and part.isalpha():
+                _nom_excl.add(part)
+
     nom = prenom = nom_complet = fonction = None
 
     for k, v in all_cells.items():
-        ku = k.upper().replace("_", "").replace(" ", "")
+        ku     = k.upper().replace("_", "").replace(" ", "")
+        ku_sep = k.upper().replace(" ", "_")
 
-        # Nom complet dans une seule colonne
+        # Nom complet
         if any(pat in ku for pat in ("NOMCOMPLET", "NOMETPRENOM", "NOMPRENOM",
                                      "FULLNAME", "NOMEMPLOY")):
             nom_complet = v
             continue
-
         # Prénom
         if ku in ("PRENOM", "PRENOMS", "FIRSTNAME", "GIVENNAME"):
             prenom = v
             continue
-        if ku.startswith("PRENOM") and not any(ex in ku for ex in ("COMPLET", "NOM")):
+        if ku_sep.startswith("PRENOM_") and "COMPLET" not in ku and "NOM" not in ku:
             prenom = v
             continue
-
-        # Nom de famille (exclure NOM_DEPARTEMENT, NOM_CHEF…)
-        if ku in ("NOM", "LASTNAME", "FAMILYNAME", "NAME"):
+        # Nom de famille
+        if ku in ("NOM", "LASTNAME", "FAMILYNAME", "SURNAME", "NAME"):
             nom = v
             continue
-        if ku.startswith("NOM") and not any(ex in ku for ex in _NOM_EXCL):
-            nom = v
+        if ku_sep.startswith("NOM_"):
+            suffix = set(re.split(r"[_\s]+", ku_sep[4:]))
+            if not suffix & _nom_excl:
+                nom = v
             continue
-
-        # Fonction / Poste
-        if any(x in ku for x in ("FONC", "POSTE", "EMPLOI", "TITRE", "GRADE", "QUALIF")):
+        # Fonction / rôle
+        col_parts = set(re.split(r"[_\s]+", k.upper().strip()))
+        if col_parts & {"FONCTION", "POSTE", "EMPLOI", "TITRE", "GRADE",
+                        "QUALIF", "FUNCTION", "POSITION", "ROLE", "TITLE", "JOB"}:
             if not fonction or len(v) > len(fonction):
                 fonction = v
 
-    # ── Construction de la réponse ─────────────────────────────────────────
-    parts: List[str] = []
-
+    parts = []
     if nom_complet:
-        parts.append(_upper_name(nom_complet))
+        parts.append(_up(nom_complet))
     elif prenom and nom:
-        # Assure que NOM et PRENOM sont tous les deux en majuscules,
-        # quelle que soit la casse dans l'Excel (ex: "salim" → "SALIM").
-        parts.append(f"{_upper_name(prenom)} {_upper_name(nom)}")
+        parts.append(f"{_up(prenom)} {_up(nom)}")
     elif nom:
-        parts.append(_upper_name(nom))
+        parts.append(_up(nom))
     elif prenom:
-        parts.append(_upper_name(prenom))
-
+        parts.append(_up(prenom))
     if fonction:
-        parts.append(_upper_name(fonction))
-
+        parts.append(_up(fonction))
     if parts:
         return " — ".join(parts)
 
-    # Fallback : 3 valeurs les plus longues (hors codes courts techniques)
+    # Dernier recours : 3 valeurs les plus longues
     long_vals = [v for v in all_cells.values() if not _is_short_code(v)]
     return " — ".join(sorted(long_vals, key=len, reverse=True)[:3])
 
@@ -417,7 +489,8 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         sources = list({r["metadata"].get("filename", "?") for r in rows})
         raw_row = rows[0]["metadata"].get("raw_row", {})
         if raw_row:
-            answer = _format_structured_answer(raw_row)
+            # Passe table + engine pour la détection statistique des colonnes
+            answer = _format_structured_answer(raw_row, table=source, engine=structured)
         else:
             answer = rows[0]["content"].split("] ", 1)[-1]
         logger.info("  ✅ Structured QA Direct: %d ligne(s) SQL → sans LLM [table=%s]",

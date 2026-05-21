@@ -214,12 +214,30 @@ def get_user_history(user_id: int, admin: dict = Depends(require_superadmin)):
     """Superadmin peut voir l'historique de n'importe quel utilisateur."""
     return get_history(user_id)
 
+_EXCEL_EXTS = {".xlsx", ".xls"}
+
 @app.post("/upload")
 def upload(file: UploadFile = File(...), admin: dict = Depends(require_superadmin)):
     os.makedirs(config.docs_dir, exist_ok=True)
     dest = os.path.join(config.docs_dir, file.filename)
-    with open(dest, "wb") as f: shutil.copyfileobj(file.file, f)
-    return {"message": f"Fichier '{file.filename}' uploadé", "hint": "Appelez POST /ingest pour l'indexer"}
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext in _EXCEL_EXTS:
+        # Rechargement DuckDB immédiat pour les fichiers Excel — sans ingest RAG complet.
+        result = pipeline.reload_structured()
+        return {
+            "message": f"Fichier Excel '{file.filename}' uploadé et chargé dans DuckDB.",
+            "tables_loaded": result["tables_loaded"],
+            "table_names": result["table_names"],
+            "hint": "Les données sont disponibles immédiatement. Lancez /ingest uniquement si vous voulez aussi indexer le contenu texte.",
+        }
+
+    return {
+        "message": f"Fichier '{file.filename}' uploadé.",
+        "hint": "Appelez POST /ingest pour l'indexer dans la base vectorielle.",
+    }
 
 @app.post("/ingest")
 def ingest(background_tasks: BackgroundTasks, reset: bool = False, admin: dict = Depends(require_superadmin)):
@@ -231,6 +249,32 @@ def ingest(background_tasks: BackgroundTasks, reset: bool = False, admin: dict =
         finally: ingestion_status["running"] = False
     background_tasks.add_task(run)
     return {"message": f"Ingestion démarrée (reset={reset})"}
+
+@app.post("/reload-structured")
+def reload_structured(admin: dict = Depends(require_superadmin)):
+    """Recharge tous les fichiers Excel dans DuckDB sans relancer l'ingestion RAG.
+
+    Utile quand un fichier Excel est modifié directement sur le serveur.
+    Nouveaux fichiers, colonnes ajoutées, données mises à jour — tout est pris en compte.
+    """
+    result = pipeline.reload_structured()
+    return {
+        "message": f"{result['tables_loaded']} table(s) Excel rechargée(s) dans DuckDB.",
+        "tables": result["table_names"],
+    }
+
+@app.get("/structured-tables")
+def structured_tables(user: dict = Depends(get_current_user)):
+    """Liste les tables Excel actuellement chargées dans DuckDB."""
+    tables = []
+    for name, info in pipeline.structured.tables.items():
+        tables.append({
+            "name": name,
+            "filename": info["filename"],
+            "rows": info["row_count"],
+            "columns": info["user_columns"] or info["columns"],
+        })
+    return {"tables": tables, "count": len(tables)}
 
 @app.post("/reset")
 def reset_index(admin: dict = Depends(require_superadmin)):
