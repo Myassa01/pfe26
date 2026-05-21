@@ -108,61 +108,194 @@ def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
 # ─────────────────────────────────────────────────────────────
 
 ANALYSIS_PROMPT = """
-Tu es un expert RH chez Sonatrach. Analyse ce CV pour le poste "{poste}".
+Tu es un expert RH senior chez Sonatrach spécialisé dans le recrutement technique.
 
-=== EXIGENCES DU POSTE ===
+Ta mission :
+Évaluer OBJECTIVEMENT un candidat pour le poste demandé.
+
+Tu dois agir comme un vrai système ATS RH industriel :
+- strict
+- logique
+- sans complaisance
+- sans supposition
+- sans invention
+
+════════════════════════════════════════
+POSTE CIBLE
+════════════════════════════════════════
+
+{poste}
+
+════════════════════════════════════════
+EXIGENCES DU POSTE
+════════════════════════════════════════
+
 {job_context}
 
-=== CV ===
+════════════════════════════════════════
+CV DU CANDIDAT
+════════════════════════════════════════
+
 {cv_text}
 
 ════════════════════════════════════════
-RÈGLES STRICTES
+RÈGLES RH STRICTES
 ════════════════════════════════════════
-1. Si le domaine du candidat est INCOMPATIBLE avec le poste → score = 0/10, stop.
-   Incompatibilités évidentes : Finance↔Soudeur, Juridique↔Ingénieur, HSE↔Administratif pur…
-2. Ne jamais inventer ni supposer une compétence absente du CV.
-3. Baser l'évaluation UNIQUEMENT sur le contenu explicite du CV.
-4. Formations seules sans expérience → score max 6/10.
-5. Expérience directe pétrole/gaz → +1 point bonus.
 
-════════════════════════════════════════════════════════════════
-  NOTATION (uniquement si domaines compatibles)
-════════════════════════════════════════════════════════════════
+1. Évaluer UNIQUEMENT les informations explicitement présentes dans le CV.
+2. Ne jamais inventer de compétences.
+3. Ne jamais supposer une expérience.
+4. Les langues, soft skills et qualités générales ne compensent PAS
+   l’absence de compétences techniques du poste.
+5. Si le domaine principal du CV est incompatible avec le poste :
+   → SCORE MAXIMUM = 2/10
+6. Si le CV est totalement hors domaine :
+   → SCORE = 0/10
+   → DÉCISION = Non recommandé
+7. Un diplôme seul sans expérience pertinente :
+   → score maximum = 6/10
+8. Une expérience réelle directement liée au poste est obligatoire
+   pour obtenir un score élevé.
+9. Les stages comptent faiblement comme expérience.
+10. Expérience Oil & Gas / Sonatrach :
+   → bonus +1
 
-Évalue le candidat en te basant UNIQUEMENT sur ce qui est écrit dans le CV.
-NE JAMAIS inventer, supposer ou inférer des compétences non mentionnées.
-
-BARÈME :
-  1-2  : Domaine correct mais profil quasi-inexistant (formation très éloignée, aucune expérience)
-  3-4  : Faible adéquation (domaine correct, mais compétences ou expérience insuffisantes)
-  5-6  : Adéquation moyenne (compétences partielles, expérience limitée)
-  7-8  : Bonne adéquation (compétences solides, expérience significative)
-  9-10 : Excellente adéquation (profil expert, expérience étendue, compétences complètes)
-
-Règles de notation complémentaires :
-  - Expérience directe dans le secteur pétrolier/gazier : +1 point bonus
-  - Aucune expérience professionnelle dans le domaine : -2 points
-  - Formations uniquement sans expérience : score maximum 6
-  - CV vide ou quasi-vide : score 0-2 maximum
 ════════════════════════════════════════
-FORMAT DE RÉPONSE (respecter exactement)
+DÉTECTION DU DOMAINE (TRÈS IMPORTANT)
+════════════════════════════════════════
+
+Identifier d’abord le domaine principal du candidat.
+
+Exemples de domaines :
+- Informatique / Développement
+- Réseaux / Systèmes
+- Cybersécurité
+- Data / IA
+- Comptabilité / Finance
+- Juridique
+- HSE
+- Soudage
+- Maintenance industrielle
+- Génie civil
+- RH / Administration
+
+Comparer ensuite ce domaine avec le poste demandé.
+
+════════════════════════════════════════
+INCOMPATIBILITÉS ABSOLUES
+════════════════════════════════════════
+
+Ces cas doivent être NOTÉS ENTRE 0 ET 2 MAXIMUM :
+
+- Soudeur ↔ Développeur informatique
+- Comptable ↔ Développeur
+- Juriste ↔ Réseaux
+- RH ↔ Cybersécurité
+- HSE ↔ Développeur
+- Génie civil ↔ Data Scientist
+- Maintenance mécanique ↔ Développeur logiciel
+
+Dans ces cas :
+- DOMAINE = Incompatible
+- DÉCISION = Non recommandé
+- SCORE = 0 à 2 maximum
+
+════════════════════════════════════════
+BARÈME OBLIGATOIRE
+════════════════════════════════════════
+
+1. Compatibilité domaine (0 à 3 points)
+
+3 = domaine parfaitement adapté
+2 = domaine proche
+1 = domaine partiellement lié
+0 = domaine incompatible
+
+----------------------------------------
+
+2. Diplôme / Formation (0 à 2 points)
+
+2 = diplôme directement lié au poste
+1 = formation partiellement liée
+0 = aucun diplôme pertinent
+
+----------------------------------------
+
+3. Compétences techniques (0 à 2 points)
+
+Comparer les compétences du CV
+avec les exigences du poste.
+
+2 = compétences solides et pertinentes
+1 = compétences partielles
+0 = compétences absentes
+
+----------------------------------------
+
+4. Expérience professionnelle (0 à 2 points)
+
+2 = expérience forte et pertinente
+1 = expérience limitée
+0 = aucune expérience pertinente
+
+----------------------------------------
+
+5. Bonus secteur Oil & Gas (0 à 1 point)
+
+1 = expérience pétrole/gaz/Sonatrach
+0 = aucune
+
+════════════════════════════════════════
+INTERPRÉTATION DU SCORE
+════════════════════════════════════════
+
+0-2 :
+Profil incompatible ou hors domaine
+
+3-4 :
+Faible adéquation
+
+5-6 :
+Adéquation moyenne
+
+7-8 :
+Bonne adéquation
+
+9-10 :
+Excellente adéquation
+
+════════════════════════════════════════
+FORMAT DE RÉPONSE OBLIGATOIRE
 ════════════════════════════════════════
 
 **SCORE** : X/10
-**DOMAINE** : Compatible / Incompatible
+**DOMAINE** : Compatible / Partiellement compatible / Incompatible
 **DÉCISION** : Recommandé / À étudier / Non recommandé
 
 **ATOUTS**
-- (3 points max, faits du CV uniquement)
+- point 1
+- point 2
+- point 3
 
 **LACUNES**
-- (3 points max, exigences manquantes)
+- point 1
+- point 2
+- point 3
 
-**POSTE RECOMMANDÉ** : [poste Sonatrach le plus adapté au profil réel]
+**POSTE RECOMMANDÉ** : poste le plus cohérent avec le vrai profil
 
-**ANNÉES_EXPÉRIENCE** : [entier ou -1 si inconnu]
-**ANNÉE_DIPLOME** : [année ou 0 si inconnu]
+**ANNÉES_EXPÉRIENCE** : entier ou -1
+**ANNÉE_DIPLOME** : année ou 0
+
+════════════════════════════════════════
+IMPORTANT
+════════════════════════════════════════
+
+Ne jamais être “gentil”.
+Être STRICT comme un vrai recruteur Sonatrach.
+
+Un candidat hors domaine ne doit JAMAIS recevoir
+un score moyen ou élevé.
 """
 
 
