@@ -176,43 +176,37 @@ def _safe_answer(answer: str) -> str:
 
 
 def _format_structured_answer(raw_row: Dict[str, str]) -> str:
-    """Formate une ligne Excel en réponse courte, sans LLM.
-
-    - Cache les codes courts (ex: DTC, DRH).
-    - Détecte NOM / PRENOM par correspondance exacte ou par préfixe de colonne.
-    - Colonne NOM_COMPLET ou NOM_ET_PRENOM → utilisée directement comme nom complet.
-    - Si PRENOM absent → affiche NOM seul (donnée réellement manquante dans l'Excel).
-    - Affiche FONCTION/POSTE en second.
-    - Fallback : 3 valeurs les plus longues pour les tables sans colonnes personne.
-    """
-    # Mots qui, dans un nom de colonne, indiquent que "NOM" ne désigne PAS une personne.
+    """Formate une ligne Excel en réponse courte, sans LLM."""
     _NOM_EXCL = {"DEPARTEMENT", "DIRECTION", "SERVICE", "CHANTIER",
                  "CHEF", "COMPLET", "ORGANISME", "ENTREPRISE"}
 
     def _is_short_code(v: str) -> bool:
+        # Code technique court (DTC, DRH…) : ≤ 3 chars tout en majuscules.
+        # Seuil abaissé à 3 pour ne PAS filtrer les prénoms courts (ALI, AMR…).
         s = v.strip()
-        return len(s) <= 5 and s.upper() == s and s.replace("-", "").isalpha()
+        return len(s) <= 3 and s.upper() == s and s.replace("-", "").isalpha()
 
-    clean = {
-        k: v.strip()
-        for k, v in raw_row.items()
-        if v and str(v).strip() and not _is_short_code(str(v).strip())
-    }
-    if not clean:
+    def _upper_name(v: str) -> str:
+        return v.strip().upper()
+
+    # Toutes les cellules non-vides — PAS de filtre short_code ici,
+    # pour ne pas perdre les prénoms courts dans les colonnes NOM/PRENOM.
+    all_cells = {k: str(v).strip() for k, v in raw_row.items() if v and str(v).strip()}
+    if not all_cells:
         return " | ".join(f"{k}: {v}" for k, v in raw_row.items() if v)
 
     nom = prenom = nom_complet = fonction = None
 
-    for k, v in clean.items():
-        ku = k.upper().replace("_", "")
+    for k, v in all_cells.items():
+        ku = k.upper().replace("_", "").replace(" ", "")
 
-        # Nom complet dans une seule colonne (NOM_COMPLET, NOM_ET_PRENOM…)
+        # Nom complet dans une seule colonne
         if any(pat in ku for pat in ("NOMCOMPLET", "NOMETPRENOM", "NOMPRENOM",
                                      "FULLNAME", "NOMEMPLOY")):
             nom_complet = v
             continue
 
-        # Prénom — correspondance exacte ou préfixe "PRENOM"
+        # Prénom
         if ku in ("PRENOM", "PRENOMS", "FIRSTNAME", "GIVENNAME"):
             prenom = v
             continue
@@ -220,8 +214,7 @@ def _format_structured_answer(raw_row: Dict[str, str]) -> str:
             prenom = v
             continue
 
-        # Nom de famille — correspondance exacte ou préfixe "NOM"
-        # Exclure les colonnes NOM_DEPARTEMENT, NOM_CHEF… etc.
+        # Nom de famille (exclure NOM_DEPARTEMENT, NOM_CHEF…)
         if ku in ("NOM", "LASTNAME", "FAMILYNAME", "NAME"):
             nom = v
             continue
@@ -238,23 +231,25 @@ def _format_structured_answer(raw_row: Dict[str, str]) -> str:
     parts: List[str] = []
 
     if nom_complet:
-        parts.append(nom_complet)
+        parts.append(_upper_name(nom_complet))
     elif prenom and nom:
-        parts.append(f"{prenom} {nom}")
+        # Assure que NOM et PRENOM sont tous les deux en majuscules,
+        # quelle que soit la casse dans l'Excel (ex: "salim" → "SALIM").
+        parts.append(f"{_upper_name(prenom)} {_upper_name(nom)}")
     elif nom:
-        parts.append(nom)
+        parts.append(_upper_name(nom))
     elif prenom:
-        parts.append(prenom)
+        parts.append(_upper_name(prenom))
 
     if fonction:
-        parts.append(fonction)
+        parts.append(_upper_name(fonction))
 
     if parts:
         return " — ".join(parts)
 
-    # Fallback : tables sans colonnes personne (ex: formations) → 3 valeurs les + longues
-    sorted_items = sorted(clean.items(), key=lambda x: len(x[1]), reverse=True)[:3]
-    return " | ".join(f"{k}: {v}" for k, v in sorted_items)
+    # Fallback : 3 valeurs les plus longues (hors codes courts techniques)
+    long_vals = [v for v in all_cells.values() if not _is_short_code(v)]
+    return " — ".join(sorted(long_vals, key=len, reverse=True)[:3])
 
 
 def _extract_primary_value(item: str, source: Optional[str], structured_engine) -> str:
