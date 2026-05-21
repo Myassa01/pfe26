@@ -371,6 +371,18 @@ def _extract_primary_value(item: str, source: Optional[str], structured_engine) 
             if entity_candidates:
                 return max(entity_candidates, key=len)
 
+            # Priority 1b : valeur qui COMMENCE par le stem de la table
+            # Ex : "SERVICE MECANIQUE" commence par "SERVICE" → fiable même
+            # quand le nom de colonne est générique (INTITULE, LIBELLE…).
+            val_candidates = [
+                v for k, v in pairs.items()
+                if k != "__RAW__"
+                and v.upper().startswith(table_stem + " ")
+                and len(v) > len(table_stem)
+            ]
+            if val_candidates:
+                return max(val_candidates, key=len)
+
     # Fallback : valeur la plus longue = nom d'entité (SERVICE MECANIQUE > KEDDAR)
     best = max(pairs.values(), key=lambda v: len(v), default=item)
     return best if len(best) > 2 else item
