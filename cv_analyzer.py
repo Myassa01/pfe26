@@ -15,58 +15,42 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 
 def extract_text_from_pdf(content: bytes) -> str:
-    """Extraction texte PDF."""
     try:
         import fitz
         doc = fitz.open(stream=content, filetype="pdf")
         text = "\n".join(page.get_text() for page in doc)
         doc.close()
         return text.strip()
-
     except ImportError:
         logger.warning("PyMuPDF absent, fallback pdfplumber")
         try:
             import pdfplumber
             with pdfplumber.open(io.BytesIO(content)) as pdf:
                 return "\n".join(
-                    page.extract_text() or ""
-                    for page in pdf.pages
+                    page.extract_text() or "" for page in pdf.pages
                 ).strip()
         except ImportError:
-            raise RuntimeError(
-                "Aucune librairie PDF disponible. "
-                "Installez : pip install pymupdf"
-            )
+            raise RuntimeError("Installez : pip install pymupdf")
 
 
 def extract_text_from_docx(content: bytes) -> str:
-    """Extraction DOCX."""
     try:
         from docx import Document
         doc = Document(io.BytesIO(content))
         return "\n".join(p.text for p in doc.paragraphs).strip()
     except ImportError:
-        raise RuntimeError(
-            "python-docx non installé. "
-            "Installez : pip install python-docx"
-        )
+        raise RuntimeError("Installez : pip install python-docx")
 
 
 def extract_cv_text(content: bytes, filename: str) -> str:
-    """Dispatcher extraction."""
     name = filename.lower()
-
     if name.endswith(".pdf"):
         return extract_text_from_pdf(content)
     elif name.endswith(".docx"):
         return extract_text_from_docx(content)
     elif name.endswith(".txt"):
         return content.decode("utf-8", errors="replace").strip()
-
-    raise ValueError(
-        f"Format non supporté : {filename}. "
-        "Formats acceptés : PDF, DOCX, TXT"
-    )
+    raise ValueError(f"Format non supporté : {filename}. Acceptés : PDF, DOCX, TXT")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -77,19 +61,11 @@ MIN_CV_LENGTH = 200
 
 
 def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
-    """
-    Vérifie que le CV contient suffisamment d'informations.
-    Retourne un dict d'erreur si invalide, None sinon.
-    """
     if not cv_text or len(cv_text.strip()) < MIN_CV_LENGTH:
         return {
             "answer": (
-                f"⚠️ CV insuffisant ({filename}) — le contenu est trop limité "
-                f"pour permettre une analyse fiable.\n\n"
-                f"Le fichier ne contient que {len(cv_text.strip())} caractères "
-                f"(minimum requis : {MIN_CV_LENGTH}).\n\n"
-                "Veuillez soumettre un CV complet incluant : formation, "
-                "expériences professionnelles et compétences."
+                f"⚠️ CV insuffisant ({filename}) — {len(cv_text.strip())} caractères "
+                f"(minimum : {MIN_CV_LENGTH}). Soumettez un CV complet."
             ),
             "score": 0,
             "poste": "Non analysé",
@@ -104,393 +80,125 @@ def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
 
 
 # ─────────────────────────────────────────────────────────────
-# Prompt analyse — mode STANDARD (poste précisé)
+# PROMPT STANDARD — poste précisé
+# Court, structuré, calcul de score interne non affiché
 # ─────────────────────────────────────────────────────────────
 
-ANALYSIS_PROMPT = """
-Tu es un expert RH senior chez Sonatrach spécialisé dans le recrutement technique.
+ANALYSIS_PROMPT = """Tu es un recruteur RH expert chez Sonatrach.
 
-Ta mission :
-Évaluer OBJECTIVEMENT un candidat pour le poste demandé.
+POSTE CIBLE : {poste}
 
-Tu dois agir comme un vrai système ATS RH industriel :
-- strict
-- logique
-- sans complaisance
-- sans supposition
-- sans invention
-
-════════════════════════════════════════
-POSTE CIBLE
-════════════════════════════════════════
-
-{poste}
-
-════════════════════════════════════════
-EXIGENCES DU POSTE
-════════════════════════════════════════
-
+EXIGENCES DU POSTE :
 {job_context}
 
-════════════════════════════════════════
-CV DU CANDIDAT
-════════════════════════════════════════
-
+CV DU CANDIDAT :
 {cv_text}
 
-════════════════════════════════════════
-RÈGLES RH STRICTES
-════════════════════════════════════════
+---
+CALCUL INTERNE DU SCORE (ne pas afficher ce calcul) :
+- Compatibilité domaine : 0-3 pts
+- Diplôme/Formation : 0-2 pts
+- Compétences techniques : 0-2 pts
+- Expérience professionnelle : 0-2 pts
+- Bonus Oil & Gas / Sonatrach : 0-1 pt
+TOTAL : X/10
 
-1. Évaluer UNIQUEMENT les informations explicitement présentes dans le CV.
-2. Ne jamais inventer de compétences.
-3. Ne jamais supposer une expérience.
-4. Les langues, soft skills et qualités générales ne compensent PAS
-   l'absence de compétences techniques du poste.
-5. Si le domaine principal du CV est incompatible avec le poste :
-   → SCORE MAXIMUM = 2/10
-6. Si le CV est totalement hors domaine :
-   → SCORE = 0/10
-   → DÉCISION = Non recommandé
-7. Un diplôme seul sans expérience pertinente :
-   → score maximum = 6/10
-8. Une expérience réelle directement liée au poste est obligatoire
-   pour obtenir un score élevé.
-9. Les stages comptent faiblement comme expérience.
-10. Expérience Oil & Gas / Sonatrach :
-   → bonus +1
+RÈGLES ABSOLUES :
+- Si le domaine du CV est incompatible avec le poste → SCORE MAX 2/10
+- Ne jamais inventer une compétence absente du CV
+- Un diplôme seul sans expérience → max 6/10
+- Les soft skills ne compensent pas les lacunes techniques
 
-════════════════════════════════════════
-DÉTECTION DU DOMAINE (TRÈS IMPORTANT)
-════════════════════════════════════════
-
-Identifier d'abord le domaine principal du candidat.
-
-Exemples de domaines :
-- Informatique / Développement
-- Réseaux / Systèmes
-- Cybersécurité
-- Data / IA
-- Comptabilité / Finance
-- Juridique
-- HSE
-- Soudage
-- Maintenance industrielle
-- Génie civil
-- RH / Administration
-
-Comparer ensuite ce domaine avec le poste demandé.
-
-════════════════════════════════════════
-INCOMPATIBILITÉS ABSOLUES
-════════════════════════════════════════
-
-Ces cas doivent être NOTÉS ENTRE 0 ET 2 MAXIMUM :
-
-- Soudeur ↔ Développeur informatique
-- Comptable ↔ Développeur
-- Juriste ↔ Réseaux
-- RH ↔ Cybersécurité
-- HSE ↔ Développeur
-- Génie civil ↔ Data Scientist
-- Maintenance mécanique ↔ Développeur logiciel
-
-Dans ces cas :
-- DOMAINE = Incompatible
-- DÉCISION = Non recommandé
-- SCORE = 0 à 2 maximum
-
-════════════════════════════════════════
-BARÈME OBLIGATOIRE
-════════════════════════════════════════
-
-1. Compatibilité domaine (0 à 3 points)
-
-3 = domaine parfaitement adapté
-2 = domaine proche
-1 = domaine partiellement lié
-0 = domaine incompatible
-
-----------------------------------------
-
-2. Diplôme / Formation (0 à 2 points)
-
-2 = diplôme directement lié au poste
-1 = formation partiellement liée
-0 = aucun diplôme pertinent
-
-----------------------------------------
-
-3. Compétences techniques (0 à 2 points)
-
-Comparer les compétences du CV
-avec les exigences du poste.
-
-2 = compétences solides et pertinentes
-1 = compétences partielles
-0 = compétences absentes
-
-----------------------------------------
-
-4. Expérience professionnelle (0 à 2 points)
-
-2 = expérience forte et pertinente
-1 = expérience limitée
-0 = aucune expérience pertinente
-
-----------------------------------------
-
-5. Bonus secteur Oil & Gas (0 à 1 point)
-
-1 = expérience pétrole/gaz/Sonatrach
-0 = aucune
-
-════════════════════════════════════════
-INTERPRÉTATION DU SCORE
-════════════════════════════════════════
-
-0-2 :
-Profil incompatible ou hors domaine
-
-3-4 :
-Faible adéquation
-
-5-6 :
-Adéquation moyenne
-
-7-8 :
-Bonne adéquation
-
-9-10 :
-Excellente adéquation
-
-════════════════════════════════════════
-RÈGLES POUR LE POSTE RECOMMANDÉ
-════════════════════════════════════════
-
-Le POSTE RECOMMANDÉ doit être basé UNIQUEMENT
-sur le domaine réel du CV.
-
-NE JAMAIS recopier automatiquement le poste demandé.
-
-Si le candidat est incompatible avec le poste cible :
-- proposer 2 à 3 postes cohérents avec son vrai domaine
-- chaque poste sur une ligne séparée commençant par "- "
-
-Exemples obligatoires :
-
-CV comptabilité
-→ - Comptable junior
-→ - Auditeur interne
-→ - Contrôleur de gestion
-
-CV soudage
-→ - Soudeur industriel
-→ - Technicien chaudronnerie
-→ - Chef d'équipe soudage
-
-CV lettres / langues
-→ - Assistant administratif
-→ - Chargé de communication
-→ - Traducteur technique
-
-CV HSE
-→ - Ingénieur HSE
-→ - Agent sécurité industrielle
-
-CV juridique
-→ - Juriste d'entreprise
-→ - Chargé de conformité
-
-Si le candidat est compatible avec le poste cible :
-- proposer le poste demandé en premier
-- ajouter 1 à 2 variantes proches
-
-════════════════════════════════════════
-FORMAT DE RÉPONSE OBLIGATOIRE
-════════════════════════════════════════
+RÉPONDS UNIQUEMENT avec ce format, rien d'autre :
 
 **SCORE** : X/10
-**DOMAINE** : Compatible / Partiellement compatible / Incompatible
+**DOMAINE** : [domaine principal du candidat]
 **DÉCISION** : Recommandé / À étudier / Non recommandé
 
 **ATOUTS**
-- point 1
-- point 2
-- point 3
+- [atout 1]
+- [atout 2]
+- [atout 3]
 
 **LACUNES**
-- point 1
-- point 2
-- point 3
+- [lacune 1]
+- [lacune 2]
 
 **POSTE RECOMMANDÉ** :
-- poste 1
-- poste 2
-- poste 3 (si pertinent)
+- [poste 1 adapté au vrai domaine du CV]
+- [poste 2]
+- [poste 3 si pertinent]
 
-**ANNÉES_EXPÉRIENCE** : entier ou -1
-**ANNÉE_DIPLOME** : année ou 0
-
-════════════════════════════════════════
-IMPORTANT
-════════════════════════════════════════
-
-Ne jamais être "gentil".
-Être STRICT comme un vrai recruteur Sonatrach.
-
-Un candidat hors domaine ne doit JAMAIS recevoir
-un score moyen ou élevé.
-
-NE JAMAIS afficher le barème de notation dans la réponse.
-NE JAMAIS expliquer les points attribués.
-Répondre UNIQUEMENT avec le format demandé ci-dessus.
+**ANNÉES_EXPÉRIENCE** : [nombre entier ou -1]
+**ANNÉE_DIPLOME** : [année ou 0]
 """
 
 
 # ─────────────────────────────────────────────────────────────
-# Prompt analyse — mode DÉCOUVERTE (aucun poste fourni)
+# PROMPT DÉCOUVERTE — sans poste précisé
 # ─────────────────────────────────────────────────────────────
 
-DISCOVERY_PROMPT = """
-Tu es un expert RH senior chez Sonatrach spécialisé dans le recrutement technique.
+DISCOVERY_PROMPT = """Tu es un recruteur RH expert chez Sonatrach.
 
-Un candidat soumet son CV sans préciser de poste visé.
-Ta mission : analyser son profil réel et identifier les postes Sonatrach les mieux adaptés.
+Un candidat soumet son CV sans poste visé. Identifie son profil et propose les meilleurs postes Sonatrach compatibles.
 
-════════════════════════════════════════
-CV DU CANDIDAT
-════════════════════════════════════════
-
+CV DU CANDIDAT :
 {cv_text}
 
-════════════════════════════════════════
-RÉFÉRENTIEL POSTES SONATRACH
-════════════════════════════════════════
-
+RÉFÉRENTIEL POSTES SONATRACH :
 {job_context}
 
-════════════════════════════════════════
-RÈGLES STRICTES
-════════════════════════════════════════
+---
+CALCUL INTERNE DU SCORE (ne pas afficher ce calcul) :
+- Niveau de formation : 0-3 pts
+- Expérience professionnelle réelle : 0-4 pts
+- Pertinence pour Sonatrach : 0-2 pts
+- Bonus Oil & Gas : 0-1 pt
+TOTAL : X/10
 
-1. Identifier le DOMAINE PRINCIPAL du candidat (formation + expérience réelle).
-2. Évaluer UNIQUEMENT ce qui est explicitement présent dans le CV.
-3. Ne jamais inventer de compétences ou supposer une expérience.
-4. Les postes recommandés DOIVENT correspondre au vrai domaine du CV.
-5. Proposer 2 à 3 postes Sonatrach réellement compatibles, du plus adapté au moins adapté.
-6. Le score reflète l'employabilité générale du candidat chez Sonatrach
-   (expérience, diplôme, pertinence du profil).
+RÈGLES :
+- Identifier le domaine principal RÉEL du candidat
+- Proposer 2-3 postes Sonatrach vraiment compatibles avec ce domaine
+- Ne jamais proposer un poste informatique à un soudeur, ni un poste technique à un administratif
 
-════════════════════════════════════════
-EXEMPLES DE CORRESPONDANCES OBLIGATOIRES
-════════════════════════════════════════
-
-CV maintenance industrielle :
-→ - Technicien de maintenance industrielle
-→ - Agent de maintenance équipements
-→ - Chef d'équipe maintenance
-
-CV informatique / développement :
-→ - Développeur logiciel
-→ - Ingénieur systèmes d'information
-→ - Analyste programmeur
-
-CV réseaux / télécoms :
-→ - Ingénieur réseaux télécoms
-→ - Technicien infrastructure réseau
-→ - Administrateur systèmes
-
-CV comptabilité / finance :
-→ - Comptable
-→ - Contrôleur de gestion
-→ - Auditeur interne
-
-CV HSE :
-→ - Ingénieur HSE
-→ - Agent sécurité industrielle
-→ - Technicien environnement
-
-CV génie civil / BTP :
-→ - Ingénieur génie civil
-→ - Conducteur de travaux
-→ - Technicien topographie
-
-CV RH / administration :
-→ - Chargé de ressources humaines
-→ - Assistant RH
-→ - Gestionnaire de paie
-
-CV juridique :
-→ - Juriste d'entreprise
-→ - Chargé de conformité réglementaire
-
-CV soudage / chaudronnerie :
-→ - Soudeur industriel
-→ - Technicien chaudronnerie
-→ - Inspecteur soudage
-
-════════════════════════════════════════
-FORMAT DE RÉPONSE OBLIGATOIRE
-════════════════════════════════════════
+RÉPONDS UNIQUEMENT avec ce format, rien d'autre :
 
 **SCORE** : X/10
 **DOMAINE** : [domaine principal détecté]
 **DÉCISION** : Recommandé / À étudier / Non recommandé
 
 **ATOUTS**
-- point 1
-- point 2
-- point 3
+- [atout 1]
+- [atout 2]
+- [atout 3]
 
 **LACUNES**
-- point 1
-- point 2
+- [lacune 1]
+- [lacune 2]
 
 **POSTE RECOMMANDÉ** :
-- Poste 1 (le plus adapté)
-- Poste 2
-- Poste 3 (si pertinent)
+- [poste 1 le plus adapté]
+- [poste 2]
+- [poste 3 si pertinent]
 
-**ANNÉES_EXPÉRIENCE** : entier ou -1
-**ANNÉE_DIPLOME** : année ou 0
-
-════════════════════════════════════════
-IMPORTANT
-════════════════════════════════════════
-
-NE JAMAIS afficher le barème de notation dans la réponse.
-NE JAMAIS expliquer les points attribués.
-NE JAMAIS proposer un poste informatique à un soudeur.
-NE JAMAIS proposer un poste technique à un juriste ou comptable.
-Répondre UNIQUEMENT avec le format demandé ci-dessus.
-Être CONCIS et DIRECT.
+**ANNÉES_EXPÉRIENCE** : [nombre entier ou -1]
+**ANNÉE_DIPLOME** : [année ou 0]
 """
 
 
 def build_analysis_prompt(cv_text: str, poste: str, job_context: str) -> str:
-    """
-    Choisit le bon prompt selon que le poste est précisé ou non.
-    - Avec poste  → ANALYSIS_PROMPT  (évaluation par rapport au poste cible)
-    - Sans poste  → DISCOVERY_PROMPT (découverte des postes compatibles)
-    """
-    fallback_context = (
-        "Aucun document spécifique trouvé dans la base. "
-        "Appliquer les critères RH généraux Sonatrach pour ce type de profil."
+    fallback = (
+        "Aucun référentiel spécifique trouvé. "
+        "Appliquer les critères RH généraux Sonatrach."
     )
+    ctx = job_context or fallback
 
     if not poste:
-        return DISCOVERY_PROMPT.format(
-            cv_text=cv_text[:4000],
-            job_context=job_context or fallback_context,
-        )
+        return DISCOVERY_PROMPT.format(cv_text=cv_text[:4000], job_context=ctx)
 
     return ANALYSIS_PROMPT.format(
         poste=poste,
-        job_context=job_context or (
-            "Aucun document spécifique trouvé dans la base. "
-            "Appliquer les critères RH généraux Sonatrach pour ce type de poste."
-        ),
+        job_context=ctx,
         cv_text=cv_text[:4000],
     )
 
@@ -505,7 +213,6 @@ def analyze_cv_with_pipeline(
     import time
     t0 = time.time()
 
-    # ── Validation préalable ───────────────────────────────────
     validation_error = validate_cv_text(cv_text, filename)
     if validation_error:
         logger.warning(
@@ -516,16 +223,11 @@ def analyze_cv_with_pipeline(
 
     search_poste = poste.strip() if poste else ""
 
-    # ── Construction de la requête RAG ─────────────────────────
     if search_poste:
-        # Mode standard : chercher les exigences du poste ciblé
         search_query = f"exigences compétences diplômes requis poste {search_poste}"
     else:
-        # Mode découverte : chercher les postes compatibles avec le profil du CV
-        cv_hint = " ".join(cv_text[:800].split())[:400]
-        search_query = (
-            f"postes Sonatrach disponibles compatibles profil candidat {cv_hint}"
-        )
+        cv_hint = " ".join(cv_text[:600].split())[:300]
+        search_query = f"postes Sonatrach compatibles profil {cv_hint}"
 
     # ── Recherche RAG ──────────────────────────────────────────
     try:
@@ -555,10 +257,8 @@ def analyze_cv_with_pipeline(
         if pipeline.reranker and top_chunks:
             pairs = [(search_query, c["content"]) for c in top_chunks]
             scores = pipeline.reranker.model.predict(pairs)
-
             for c, s in zip(top_chunks, scores):
                 c["rerank_score"] = float(s)
-
             top_chunks = sorted(
                 top_chunks,
                 key=lambda x: x.get("rerank_score", 0),
@@ -569,11 +269,7 @@ def analyze_cv_with_pipeline(
             f"[{c['metadata'].get('source', '?')}]\n{c['content']}"
             for c in top_chunks
         )
-
-        sources = list({
-            c["metadata"].get("source", "?")
-            for c in top_chunks
-        })
+        sources = list({c["metadata"].get("source", "?") for c in top_chunks})
 
     except Exception as e:
         logger.warning("Erreur recherche RAG : %s", e)
@@ -591,17 +287,14 @@ def analyze_cv_with_pipeline(
         answer = pipeline.llm.generate(
             prompt=prompt,
             system=(
-                "Tu es un expert RH chez Sonatrach. Réponds uniquement en français. "
-                "Sois CONCIS et DIRECT : le recruteur doit pouvoir lire la fiche en 20 secondes. "
-                "Utilise UNIQUEMENT le format demandé avec des tirets. "
-                "Aucune phrase de remplissage, aucun développement inutile. "
-                "N'affiche JAMAIS le barème de notation ni les points attribués par critère. "
-                "Base-toi UNIQUEMENT sur le contenu explicite du CV, sans invention."
+                "Tu es un expert RH chez Sonatrach. "
+                "Réponds UNIQUEMENT en français avec le format exact demandé. "
+                "N'affiche JAMAIS le barème ni les points par critère. "
+                "Sois concis : maximum 10 lignes hors format obligatoire."
             ),
             temperature=0.0,
             max_tokens=pipeline.config.llm_max_tokens_long,
         )
-
     except Exception as e:
         raise RuntimeError(f"Erreur analyse LLM : {e}")
 
@@ -636,12 +329,6 @@ def analyze_cv_with_pipeline(
 # ─────────────────────────────────────────────────────────────
 
 def sort_results_with_tiebreaker(results: list) -> list:
-    """
-    Trie les résultats batch par ordre décroissant :
-      1. Score décroissant                    (critère principal)
-      2. Années d'expérience décroissantes    (1er départage)
-      3. Année du diplôme croissante          (2e départage)
-    """
     def sort_key(r: dict) -> tuple:
         score = r.get("score")
         if score is None:
@@ -654,11 +341,7 @@ def sort_results_with_tiebreaker(results: list) -> list:
         diploma_year = r.get("diploma_year")
         diploma_year = diploma_year if (diploma_year and diploma_year > 0) else 9999
 
-        return (
-            -score,
-            -years_exp,
-            diploma_year,
-        )
+        return (-score, -years_exp, diploma_year)
 
     return sorted(results, key=sort_key)
 
@@ -695,17 +378,9 @@ def _extract_score(text: str) -> Optional[int]:
 
 
 def _extract_recommended_poste(text: str) -> Optional[str]:
-    """
-    Extrait le ou les postes recommandés depuis la réponse LLM.
-    Supporte :
-      - plusieurs postes listés avec "- " sur des lignes séparées
-      - un poste unique sur la même ligne que le label
-    Retourne une chaîne avec les postes séparés par " / ".
-    """
     import re
 
-    # ── Tentative multi-lignes ─────────────────────────────────
-    # Cherche le bloc après "POSTE RECOMMANDÉ :" jusqu'au prochain label **...**
+    # Multi-lignes : bloc après "POSTE RECOMMANDÉ :" jusqu'au prochain label **
     m = re.search(
         r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*[:\-]?\s*\n([\s\S]*?)"
         r"(?=\n\s*\*\*[A-ZÀÂÉÈÊËÎÏÔÙÛÜ_\s]+\*\*|\Z)",
@@ -717,7 +392,6 @@ def _extract_recommended_poste(text: str) -> Optional[str]:
         lines = []
         for line in block.splitlines():
             cleaned = line.strip().lstrip("-•* \t")
-            # Ignorer les lignes vides, trop courtes, ou qui ressemblent à des labels
             if (
                 cleaned
                 and len(cleaned) > 3
@@ -730,7 +404,7 @@ def _extract_recommended_poste(text: str) -> Optional[str]:
         if lines:
             return " / ".join(lines)
 
-    # ── Fallback : poste unique sur la même ligne que le label ─
+    # Fallback : poste unique sur la même ligne
     patterns = [
         r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*[:\-]\s*([^\n\[\]]+)",
         r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*\n+\s*([^\n\[\]\*]{4,})",
