@@ -547,6 +547,16 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
         #     Avec column=None, on retourne "INTITULE_DE_LA_FORMATION: XYZ | STATUT: Obligatoire"
         query_column = None if filt else column
 
+        # Auto-détection de la colonne entité quand aucune colonne n'est précisée et
+        # pas de filtre : évite de renvoyer toutes les lignes et de tomber sur des
+        # noms de personnes au lieu des noms d'entités (services, directions…).
+        # Ex : "quels sont les services?" → SELECT DISTINCT NOM_SERVICE au lieu de *
+        if not filt and not query_column and structured.has_table(source):
+            auto_col = structured.get_entity_column(source)
+            if auto_col:
+                query_column = auto_col
+                logger.info("  [exhaustive] Colonne entité auto-détectée : %s", auto_col)
+
         direct = structured.list_values(
             table=source, column=query_column, filters=filt, distinct=True,
         )
