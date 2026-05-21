@@ -17,7 +17,13 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from config import config
-from auth import init_db, login, verify_token, revoke_token, create_user, list_users, update_user, delete_user ,save_history, get_history, delete_history
+from auth import (
+    init_db, login, verify_token, revoke_token,
+    create_user, list_users, update_user, delete_user,
+    save_history, get_history, delete_history,
+    create_conversation, list_conversations, delete_conversation,
+    update_conversation_title, get_conversation_messages,
+)
 from cv_analyzer import extract_cv_text, analyze_cv_with_pipeline
 from src.pipeline import RAGPipeline
 from src.ingestion.loader import scrape_url
@@ -71,7 +77,12 @@ class UpdateUserRequest(BaseModel):
     role: Optional[str] = None; password: Optional[str] = None; active: Optional[int] = None
 
 class QuestionRequest(BaseModel):
-    question: str; history: Optional[List[dict]] = []
+    question: str
+    history: Optional[List[dict]] = []
+    conversation_id: Optional[int] = None
+
+class ConversationRequest(BaseModel):
+    title: str = "Nouvelle discussion"
 
 class LienRequest(BaseModel):
     urls: List[str]
@@ -136,17 +147,54 @@ def query_endpoint(req: QuestionRequest, user: dict = Depends(get_current_user))
         result["source"] = "rag"
         result.setdefault("search_query", req.question)
 
-        # ✅ Sauvegarde dans l'historique
+        # Conversation : utilise celle fournie ou en crée une automatiquement.
+        conv_id = req.conversation_id
+        new_conv = None
+        if not conv_id:
+            title = req.question[:60].strip()
+            new_conv = create_conversation(user["id"], title)
+            conv_id  = new_conv["id"]
+
         save_history(
             user_id=user["id"],
             question=req.question,
             answer=result["answer"],
             source=result["source"],
+            conversation_id=conv_id,
         )
+        result["conversation_id"] = conv_id
+        if new_conv:
+            result["new_conversation"] = new_conv
         return result
     except Exception as e:
         logger.error("Erreur /query:\n%s", traceback.format_exc())
         raise HTTPException(500, str(e))
+
+
+# ── Conversations ─────────────────────────────────────────────────────────────
+
+@app.get("/conversations")
+def get_conversations(user: dict = Depends(get_current_user)):
+    return list_conversations(user["id"])
+
+@app.post("/conversations")
+def new_conversation(req: ConversationRequest, user: dict = Depends(get_current_user)):
+    return create_conversation(user["id"], req.title)
+
+@app.delete("/conversations/{conversation_id}")
+def remove_conversation(conversation_id: int, user: dict = Depends(get_current_user)):
+    delete_conversation(conversation_id, user["id"])
+    return {"message": "Conversation supprimée"}
+
+@app.put("/conversations/{conversation_id}")
+def rename_conversation(conversation_id: int, req: ConversationRequest,
+                        user: dict = Depends(get_current_user)):
+    update_conversation_title(conversation_id, user["id"], req.title)
+    return {"message": "Titre mis à jour"}
+
+@app.get("/conversations/{conversation_id}/messages")
+def get_conv_messages(conversation_id: int, user: dict = Depends(get_current_user)):
+    return get_conversation_messages(conversation_id, user["id"])
 
 
 # ── Historique par utilisateur ────────────────────────────────────────────────

@@ -42,19 +42,37 @@ def init_db():
             expires_at REAL    NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
-        CREATE TABLE IF NOT EXISTS historique (
+        CREATE TABLE IF NOT EXISTS conversations (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id    INTEGER NOT NULL,
-            question   TEXT    NOT NULL,
-            answer     TEXT    NOT NULL,
-            source     TEXT    DEFAULT 'rag',
+            title      TEXT    NOT NULL DEFAULT 'Nouvelle discussion',
             created_at TEXT    NOT NULL,
+            updated_at TEXT    NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        CREATE TABLE IF NOT EXISTS historique (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         INTEGER NOT NULL,
+            question        TEXT    NOT NULL,
+            answer          TEXT    NOT NULL,
+            source          TEXT    DEFAULT 'rag',
+            created_at      TEXT    NOT NULL,
+            conversation_id INTEGER REFERENCES conversations(id),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
         CREATE INDEX IF NOT EXISTS idx_users_email   ON users(email);
         CREATE INDEX IF NOT EXISTS idx_hist_user     ON historique(user_id);
+        CREATE INDEX IF NOT EXISTS idx_conv_user     ON conversations(user_id);
+        CREATE INDEX IF NOT EXISTS idx_hist_conv     ON historique(conversation_id);
     """)
+
+    # Migration : ajoute la colonne conversation_id si la table existait déjà sans elle.
+    try:
+        conn.execute("ALTER TABLE historique ADD COLUMN conversation_id INTEGER REFERENCES conversations(id)")
+        conn.commit()
+    except Exception:
+        pass  # colonne déjà présente
 
     count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     if count == 0:
@@ -174,25 +192,109 @@ def delete_user(user_id):
     conn.close()
 
 
-# ── Historique ────────────────────────────────────────────────────────────────
-def save_history(user_id: int, question: str, answer: str, source: str = "rag"):
+# ── Conversations ─────────────────────────────────────────────────────────────
+
+def create_conversation(user_id: int, title: str = "Nouvelle discussion") -> dict:
+    conn = get_conn()
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT INTO conversations (user_id, title, created_at, updated_at) VALUES (?,?,?,?)",
+        (user_id, title[:80].strip(), now, now),
+    )
+    conn.commit()
+    cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.close()
+    return {"id": cid, "title": title[:80].strip(), "created_at": now,
+            "updated_at": now, "message_count": 0}
+
+
+def list_conversations(user_id: int) -> list:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT c.id, c.title, c.created_at, c.updated_at, "
+        "COUNT(h.id) AS message_count "
+        "FROM conversations c "
+        "LEFT JOIN historique h ON h.conversation_id = c.id "
+        "WHERE c.user_id = ? "
+        "GROUP BY c.id "
+        "ORDER BY c.updated_at DESC",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_conversation(conversation_id: int, user_id: int):
+    conn = get_conn()
+    conv = conn.execute(
+        "SELECT id FROM conversations WHERE id=? AND user_id=?",
+        (conversation_id, user_id),
+    ).fetchone()
+    if conv:
+        conn.execute("DELETE FROM historique WHERE conversation_id=?", (conversation_id,))
+        conn.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+        conn.commit()
+    conn.close()
+
+
+def update_conversation_title(conversation_id: int, user_id: int, title: str):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO historique (user_id, question, answer, source, created_at) VALUES (?,?,?,?,?)",
-        (user_id, question, answer, source, datetime.now().isoformat())
+        "UPDATE conversations SET title=?, updated_at=? WHERE id=? AND user_id=?",
+        (title[:80].strip(), datetime.now().isoformat(), conversation_id, user_id),
     )
     conn.commit()
     conn.close()
+
+
+def get_conversation_messages(conversation_id: int, user_id: int) -> list:
+    conn = get_conn()
+    conv = conn.execute(
+        "SELECT id FROM conversations WHERE id=? AND user_id=?",
+        (conversation_id, user_id),
+    ).fetchone()
+    if not conv:
+        conn.close()
+        return []
+    rows = conn.execute(
+        "SELECT id, question, answer, source, created_at "
+        "FROM historique WHERE conversation_id=? ORDER BY created_at ASC LIMIT 200",
+        (conversation_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── Historique ────────────────────────────────────────────────────────────────
+
+def save_history(user_id: int, question: str, answer: str,
+                 source: str = "rag", conversation_id: int = None):
+    conn = get_conn()
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT INTO historique (user_id, question, answer, source, created_at, conversation_id) "
+        "VALUES (?,?,?,?,?,?)",
+        (user_id, question, answer, source, now, conversation_id),
+    )
+    if conversation_id:
+        conn.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?",
+            (now, conversation_id),
+        )
+    conn.commit()
+    conn.close()
+
 
 def get_history(user_id: int, limit: int = 50) -> list:
     conn = get_conn()
     rows = conn.execute(
         "SELECT id, question, answer, source, created_at FROM historique "
         "WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
-        (user_id, limit)
+        (user_id, limit),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
 
 def delete_history(user_id: int):
     conn = get_conn()
