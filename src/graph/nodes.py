@@ -234,10 +234,24 @@ def _format_structured_answer(
                 # Valeur doit être non-vide, courte (prénom/nom), pas un code
                 if not val or _is_short_code(val) or len(val) > 20:
                     continue
+                # Exclure les colonnes statut/flag : très peu de valeurs distinctes
+                # (ex : CONFIRME avec 1 seule valeur, OUI/NON avec 2 valeurs).
+                if engine and table and engine.has_table(table):
+                    try:
+                        _st = engine.tables[table]["sql_table"]
+                        _nr = engine.tables[table]["row_count"]
+                        _nd = engine.conn.execute(
+                            f'SELECT COUNT(DISTINCT "{col}") FROM "{_st}" '
+                            f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\''
+                        ).fetchone()[0]
+                        if _nr >= 4 and _nd <= 2:
+                            continue
+                    except Exception:
+                        pass
                 c_idx     = user_cols.index(col) if col in user_cols else 99
                 # Score = proximité dans l'ordre des colonnes × brièveté de la valeur
                 proximity = 1.0 / (1.0 + abs(c_idx - p_idx))
-                brevity   = 1.0 if len(val) <= 12 else 0.4
+                brevity   = 1.0 if len(val) <= 20 else 0.4
                 score     = proximity * brevity
                 if score > best_score:
                     best_score    = score
