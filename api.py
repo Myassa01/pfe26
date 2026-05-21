@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-import sys, os, json, shutil
+import sys, os, json, shutil, logging, traceback, types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Patch : langchain-core peut chercher langchain.debug qui n'existe pas si
+# le package `langchain` n'est pas installé (on n'utilise que langchain-core).
+if "langchain" not in sys.modules:
+    _lc_stub = types.ModuleType("langchain")
+    _lc_stub.debug = False
+    sys.modules["langchain"] = _lc_stub
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Depends, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +19,6 @@ from typing import List, Optional
 from config import config
 from auth import init_db, login, verify_token, revoke_token, create_user, list_users, update_user, delete_user ,save_history, get_history, delete_history
 from cv_analyzer import extract_cv_text, analyze_cv_with_pipeline
-from cv_ranker import rank_candidates, get_ranking_table
 from src.pipeline import RAGPipeline
 from src.ingestion.loader import scrape_url
 
@@ -137,6 +145,7 @@ def query_endpoint(req: QuestionRequest, user: dict = Depends(get_current_user))
         )
         return result
     except Exception as e:
+        logger.error("Erreur /query:\n%s", traceback.format_exc())
         raise HTTPException(500, str(e))
 
 
@@ -223,74 +232,6 @@ async def cv_analyze(
         return result
     except RuntimeError as e:
         raise HTTPException(500, str(e))
-
-@app.post("/cv-rank")
-async def cv_rank(
-    files: List[UploadFile] = File(...),
-    poste: str = Form(""),
-    admin: dict = Depends(require_superadmin),
-):
-    """
-    Analyse et classe plusieurs CVs pour un poste donné.
-    Retourne le classement du meilleur au moins bon candidat.
-    Réservé aux superadmins.
-    """
-    if not files or len(files) == 0:
-        raise HTTPException(400, "Au moins un CV requis")
-    
-    if not poste.strip():
-        raise HTTPException(400, "Le poste cible doit être spécifié")
-    
-    if not pipeline:
-        raise HTTPException(503, "Pipeline RAG non initialisé")
-    
-    allowed = {".pdf", ".docx", ".txt"}
-    cv_list = []
-    
-    # Extraction et validation de tous les fichiers
-    for file in files:
-        ext = os.path.splitext(file.filename)[1].lower()
-        
-        if ext not in allowed:
-            raise HTTPException(
-                400,
-                f"Format non supporté pour {file.filename}: {ext}. "
-                f"Formats acceptés : PDF, DOCX, TXT"
-            )
-        
-        content = await file.read()
-        
-        if len(content) > 10 * 1024 * 1024:
-            raise HTTPException(
-                413, 
-                f"Fichier {file.filename} trop volumineux (max 10 Mo)"
-            )
-        
-        try:
-            cv_text = extract_cv_text(content, file.filename)
-        except (ValueError, RuntimeError) as e:
-            raise HTTPException(400, f"Erreur extraction {file.filename}: {str(e)}")
-        
-        if not cv_text.strip():
-            raise HTTPException(422, f"CV {file.filename} vide ou illisible")
-        
-        cv_list.append({
-            "filename": file.filename,
-            "cv_text": cv_text,
-            "content": content,
-        })
-    
-    # Classement
-    try:
-        ranking_result = rank_candidates(pipeline, cv_list, poste)
-        
-        # Ajouter la table markdown
-        ranking_result["table"] = get_ranking_table(ranking_result)
-        
-        return ranking_result
-    
-    except Exception as e:
-        raise HTTPException(500, f"Erreur classement : {str(e)}")
 
 @app.post("/lien")
 def add_liens(req: LienRequest, background_tasks: BackgroundTasks, admin: dict = Depends(require_superadmin)):
