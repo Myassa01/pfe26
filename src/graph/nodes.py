@@ -178,11 +178,17 @@ def _safe_answer(answer: str) -> str:
 def _format_structured_answer(raw_row: Dict[str, str]) -> str:
     """Formate une ligne Excel en réponse courte, sans LLM.
 
-    - Cache les codes courts (ex: DTC, DRH — pas utiles à l'utilisateur).
-    - Combine NOM + PRENOM en un nom complet si les colonnes existent.
-    - Affiche la colonne FONCTION/POSTE en second.
-    - Fallback : 3 valeurs les plus longues (heuristique : plus long = plus informatif).
+    - Cache les codes courts (ex: DTC, DRH).
+    - Détecte NOM / PRENOM par correspondance exacte ou par préfixe de colonne.
+    - Colonne NOM_COMPLET ou NOM_ET_PRENOM → utilisée directement comme nom complet.
+    - Si PRENOM absent → affiche NOM seul (donnée réellement manquante dans l'Excel).
+    - Affiche FONCTION/POSTE en second.
+    - Fallback : 3 valeurs les plus longues pour les tables sans colonnes personne.
     """
+    # Mots qui, dans un nom de colonne, indiquent que "NOM" ne désigne PAS une personne.
+    _NOM_EXCL = {"DEPARTEMENT", "DIRECTION", "SERVICE", "CHANTIER",
+                 "CHEF", "COMPLET", "ORGANISME", "ENTREPRISE"}
+
     def _is_short_code(v: str) -> bool:
         s = v.strip()
         return len(s) <= 5 and s.upper() == s and s.replace("-", "").isalpha()
@@ -195,31 +201,58 @@ def _format_structured_answer(raw_row: Dict[str, str]) -> str:
     if not clean:
         return " | ".join(f"{k}: {v}" for k, v in raw_row.items() if v)
 
-    nom = prenom = fonction = None
+    nom = prenom = nom_complet = fonction = None
+
     for k, v in clean.items():
-        ku = k.upper()
-        if ku in ("NOM", "LASTNAME", "FAMILY_NAME", "NAME"):
-            nom = v
-        elif ku in ("PRENOM", "FIRSTNAME", "FIRST_NAME", "GIVEN_NAME"):
+        ku = k.upper().replace("_", "")
+
+        # Nom complet dans une seule colonne (NOM_COMPLET, NOM_ET_PRENOM…)
+        if any(pat in ku for pat in ("NOMCOMPLET", "NOMETPRENOM", "NOMPRENOM",
+                                     "FULLNAME", "NOMEMPLOY")):
+            nom_complet = v
+            continue
+
+        # Prénom — correspondance exacte ou préfixe "PRENOM"
+        if ku in ("PRENOM", "PRENOMS", "FIRSTNAME", "GIVENNAME"):
             prenom = v
-        elif any(x in ku for x in ("FONC", "POSTE", "EMPLOI", "TITRE", "GRADE")):
+            continue
+        if ku.startswith("PRENOM") and not any(ex in ku for ex in ("COMPLET", "NOM")):
+            prenom = v
+            continue
+
+        # Nom de famille — correspondance exacte ou préfixe "NOM"
+        # Exclure les colonnes NOM_DEPARTEMENT, NOM_CHEF… etc.
+        if ku in ("NOM", "LASTNAME", "FAMILYNAME", "NAME"):
+            nom = v
+            continue
+        if ku.startswith("NOM") and not any(ex in ku for ex in _NOM_EXCL):
+            nom = v
+            continue
+
+        # Fonction / Poste
+        if any(x in ku for x in ("FONC", "POSTE", "EMPLOI", "TITRE", "GRADE", "QUALIF")):
             if not fonction or len(v) > len(fonction):
                 fonction = v
 
+    # ── Construction de la réponse ─────────────────────────────────────────
     parts: List[str] = []
-    if prenom and nom:
+
+    if nom_complet:
+        parts.append(nom_complet)
+    elif prenom and nom:
         parts.append(f"{prenom} {nom}")
     elif nom:
         parts.append(nom)
     elif prenom:
         parts.append(prenom)
+
     if fonction:
         parts.append(fonction)
 
     if parts:
         return " — ".join(parts)
 
-    # Fallback : 3 valeurs les plus longues (tables sans colonnes NOM/PRENOM/FONCTION)
+    # Fallback : tables sans colonnes personne (ex: formations) → 3 valeurs les + longues
     sorted_items = sorted(clean.items(), key=lambda x: len(x[1]), reverse=True)[:3]
     return " | ".join(f"{k}: {v}" for k, v in sorted_items)
 
