@@ -612,6 +612,22 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
                     clean.append(n)
             unique_names = clean
 
+        # ── Filtre catégoriel : supprime les entrées hors-catégorie ──────────
+        # Ex : dans SERVICE, "INGENIEUR EN CHEF..." n'est pas un service.
+        # Déclenché seulement si ≥ 50 % des entrées commencent déjà par le
+        # stem + espace (évite de filtrer les tables à noms libres comme FORMATION).
+        if source_stem and len(source_stem) >= 5 and unique_names:
+            stem_prefix = source_stem + " "
+            n_matching = sum(1 for n in unique_names if n.upper().startswith(stem_prefix))
+            if n_matching / len(unique_names) >= 0.5:
+                category_filtered: list = []
+                for name in unique_names:
+                    if name.upper().startswith(stem_prefix):
+                        category_filtered.append(name)
+                    elif len(name.split()) <= 2:    # codes courts : DGAT, RSSI…
+                        category_filtered.append(name)
+                unique_names = category_filtered
+
         prefix_lines = []
         if sql_warnings:
             prefix_lines.append("⚠ Note :")
