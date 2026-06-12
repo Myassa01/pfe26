@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+import sys, os, json, shutil, logging, traceback, types
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Patch : langchain-core peut chercher langchain.debug qui n'existe pas si
+# le package `langchain` n'est pas installé (on n'utilise que langchain-core).
+if "langchain" not in sys.modules:
+    _lc_stub = types.ModuleType("langchain")
+    _lc_stub.debug = False
+    sys.modules["langchain"] = _lc_stub
+
+logger = logging.getLogger(__name__)
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Depends, BackgroundTasks, Form
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
+
+from config import config
+from auth import (
+    init_db, login, verify_token, revoke_token,
+    create_user, list_users, update_user, delete_user,
+    save_history, get_history, delete_history,
+    create_conversation, list_conversations, delete_conversation,
+    update_conversation_title, get_conversation_messages,
+)
+from cv_analyzer import extract_cv_text, analyze_cv_with_pipeline
+from src.pipeline import RAGPipeline
+from src.ingestion.loader import scrape_url
+
+init_db()
+
+app = FastAPI(title="Assistant Sonatrach", version="3.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+pipeline = None
+ingestion_status = {"running": False, "last_result": None, "error": None}
+lien_status      = {"running": False, "last_result": None, "error": None}
+LINKS_FILE = "./data/links.json"
+
+def _load_links():
+    if os.path.exists(LINKS_FILE):
+        with open(LINKS_FILE) as f: return json.load(f)
+    return []
+
+def _save_links(links):
+    os.makedirs("./data", exist_ok=True)
+    with open(LINKS_FILE, "w") as f: json.dump(links, f, indent=2)
+
+@app.on_event("startup")
+async def startup():
+    global pipeline
+    os.makedirs("./data", exist_ok=True)
+    os.makedirs(config.docs_dir, exist_ok=True)
+    pipeline = RAGPipeline(config)
+
+    # Auto-ingest si le vector store est vide et qu'il y a des documents
+    import asyncio, concurrent.futures
+    if pipeline.vector_store.count() == 0:
+        docs = [f for f in os.listdir(config.docs_dir)
+                if not f.startswith(".")]
+        if docs:
+            logger.info("Vector store vide — ingestion automatique au démarrage...")
+            ingestion_status["running"] = True
+            ingestion_status["error"] = None
+
+            def _run_ingest():
+                try:
+                    ingestion_status["last_result"] = pipeline.ingest(reset=False)
+                except Exception as e:
+                    ingestion_status["error"] = str(e)
+                    logger.error("Ingestion automatique échouée: %s", e)
+                finally:
+                    ingestion_status["running"] = False
+
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(concurrent.futures.ThreadPoolExecutor(max_workers=1), _run_ingest)
+
+def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Token manquant ou invalide")
+    user = verify_token(authorization.split(" ", 1)[1])
+    if not user: raise HTTPException(401, "Session expirée ou invalide")
+    return user
+
+def require_superadmin(user: dict = Depends(get_current_user)) -> dict:
+    if user["role"] != "superadmin": raise HTTPException(403, "Accès réservé aux administrateurs")
+    return user
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class CreateUserRequest(BaseModel):
+    email: str; nom: str; prenom: str; role: str = "employee"; password: str
+
+class UpdateUserRequest(BaseModel):
+    nom: Optional[str] = None; prenom: Optional[str] = None
+    role: Optional[str] = None; password: Optional[str] = None; active: Optional[int] = None
+
+class QuestionRequest(BaseModel):
+    question: str
+    history: Optional[List[dict]] = []
+    conversation_id: Optional[int] = None
+
+class ConversationRequest(BaseModel):
+    title: str = "Nouvelle discussion"
+
+class LienRequest(BaseModel):
+    urls: List[str]
+
+@app.post("/auth/login")
+def auth_login(req: LoginRequest):
+    result = login(req.email, req.password)
+    if not result: raise HTTPException(401, "Email ou mot de passe incorrect")
+    return result
+
+@app.post("/auth/logout")
+def auth_logout(authorization: Optional[str] = Header(None)):
+    if authorization and authorization.startswith("Bearer "):
+        revoke_token(authorization.split(" ", 1)[1])
+    return {"message": "Déconnecté"}
+
+@app.get("/auth/me")
+def auth_me(user: dict = Depends(get_current_user)):
+    return {k: user[k] for k in ("id","email","nom","prenom","role")}
+
+@app.get("/users")
+def get_users(admin: dict = Depends(require_superadmin)): return list_users()
+
+@app.post("/users")
+def add_user(req: CreateUserRequest, admin: dict = Depends(require_superadmin)):
+    try: return {"message": "Utilisateur créé", "user": create_user(req.email, req.nom, req.prenom, req.role, req.password)}
+    except ValueError as e: raise HTTPException(400, str(e))
+
+@app.put("/users/{user_id}")
+def edit_user(user_id: int, req: UpdateUserRequest, admin: dict = Depends(require_superadmin)):
+    update_user(user_id, **{k: v for k, v in req.dict().items() if v is not None})
+    return {"message": "Utilisateur mis à jour"}
+
+@app.delete("/users/{user_id}")
+def remove_user(user_id: int, admin: dict = Depends(require_superadmin)):
+    delete_user(user_id); return {"message": "Utilisateur désactivé"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "chunks_indexed": pipeline.vector_store.count() if pipeline else 0, "llm_model": config.llm_model}
+
+@app.get("/stats")
+def stats(user: dict = Depends(get_current_user)):
+    return {"chunks_indexed": pipeline.vector_store.count() if pipeline else 0,
+            "llm_model": config.llm_model, "embedding_model": config.embedding_model,
+            "reranker_model": config.reranker_model, "chunk_size": config.chunk_size,
+            "chunk_overlap": config.chunk_overlap, "top_k_dense": config.top_k_dense,
+            "top_k_sparse": config.top_k_sparse, "top_k_after_rerank": config.top_k_after_rerank,
+            "docs_dir": config.docs_dir, "ingestion_status": ingestion_status}
+
+@app.post("/query")
+def query_endpoint(req: QuestionRequest, user: dict = Depends(get_current_user)):
+    if not req.question.strip():
+        raise HTTPException(400, "Question vide")
+    try:
+        result = pipeline.query(
+            question=req.question,
+            use_query_transform=False,
+            stream=False,
+            history=req.history or None,
+            role=user["role"],
+        )
+        result["source"] = "rag"
+        result.setdefault("search_query", req.question)
+
+        # Conversation : utilise celle fournie ou en crée une automatiquement.
+        conv_id = req.conversation_id
+        new_conv = None
+        if not conv_id:
+            title = req.question[:60].strip()
+            new_conv = create_conversation(user["id"], title)
+            conv_id  = new_conv["id"]
+
+        save_history(
+            user_id=user["id"],
+            question=req.question,
+            answer=result["answer"],
+            source=result["source"],
+            conversation_id=conv_id,
+        )
+        result["conversation_id"] = conv_id
+        if new_conv:
+            result["new_conversation"] = new_conv
+        return result
+    except Exception as e:
+        logger.error("Erreur /query:\n%s", traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+# ── Conversations ─────────────────────────────────────────────────────────────
+
+@app.get("/conversations")
+def get_conversations(user: dict = Depends(get_current_user)):
+    return list_conversations(user["id"])
+
+@app.post("/conversations")
+def new_conversation(req: ConversationRequest, user: dict = Depends(get_current_user)):
+    return create_conversation(user["id"], req.title)
+
+@app.delete("/conversations/{conversation_id}")
+def remove_conversation(conversation_id: int, user: dict = Depends(get_current_user)):
+    delete_conversation(conversation_id, user["id"])
+    return {"message": "Conversation supprimée"}
+
+@app.put("/conversations/{conversation_id}")
+def rename_conversation(conversation_id: int, req: ConversationRequest,
+                        user: dict = Depends(get_current_user)):
+    update_conversation_title(conversation_id, user["id"], req.title)
+    return {"message": "Titre mis à jour"}
+
+@app.get("/conversations/{conversation_id}/messages")
+def get_conv_messages(conversation_id: int, user: dict = Depends(get_current_user)):
+    return get_conversation_messages(conversation_id, user["id"])
+
+
+# ── Historique par utilisateur ────────────────────────────────────────────────
+@app.get("/historique")
+def get_my_history(user: dict = Depends(get_current_user)):
+    """Retourne l'historique de l'utilisateur connecté."""
+    return get_history(user["id"])
+
+@app.delete("/historique")
+def clear_my_history(user: dict = Depends(get_current_user)):
+    """Supprime l'historique de l'utilisateur connecté."""
+    delete_history(user["id"])
+    return {"message": "Historique supprimé"}
+
+@app.get("/historique/{user_id}")
+def get_user_history(user_id: int, admin: dict = Depends(require_superadmin)):
+    """Superadmin peut voir l'historique de n'importe quel utilisateur."""
+    return get_history(user_id)
+
+_EXCEL_EXTS = {".xlsx", ".xls"}
+
+@app.post("/upload")
+def upload(file: UploadFile = File(...), admin: dict = Depends(require_superadmin)):
+    os.makedirs(config.docs_dir, exist_ok=True)
+    dest = os.path.join(config.docs_dir, file.filename)
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext in _EXCEL_EXTS:
+        # Rechargement DuckDB immédiat pour les fichiers Excel — sans ingest RAG complet.
+        result = pipeline.reload_structured()
+        return {
+            "message": f"Fichier Excel '{file.filename}' uploadé et chargé dans DuckDB.",
+            "tables_loaded": result["tables_loaded"],
+            "table_names": result["table_names"],
+            "hint": "Les données sont disponibles immédiatement. Lancez /ingest uniquement si vous voulez aussi indexer le contenu texte.",
+        }
+
+    return {
+        "message": f"Fichier '{file.filename}' uploadé.",
+        "hint": "Appelez POST /ingest pour l'indexer dans la base vectorielle.",
+    }
+
+@app.post("/ingest")
+def ingest(background_tasks: BackgroundTasks, reset: bool = False, admin: dict = Depends(require_superadmin)):
+    if ingestion_status["running"]: raise HTTPException(409, "Ingestion déjà en cours")
+    def run():
+        ingestion_status["running"] = True; ingestion_status["error"] = None
+        try: ingestion_status["last_result"] = pipeline.ingest(reset=reset)
+        except Exception as e: ingestion_status["error"] = str(e)
+        finally: ingestion_status["running"] = False
+    background_tasks.add_task(run)
+    return {"message": f"Ingestion démarrée (reset={reset})"}
+
+@app.post("/reload-structured")
+def reload_structured(admin: dict = Depends(require_superadmin)):
+    """Recharge tous les fichiers Excel dans DuckDB sans relancer l'ingestion RAG.
+
+    Utile quand un fichier Excel est modifié directement sur le serveur.
+    Nouveaux fichiers, colonnes ajoutées, données mises à jour — tout est pris en compte.
+    """
+    result = pipeline.reload_structured()
+    return {
+        "message": f"{result['tables_loaded']} table(s) Excel rechargée(s) dans DuckDB.",
+        "tables": result["table_names"],
+    }
+
+@app.get("/structured-tables")
+def structured_tables(user: dict = Depends(get_current_user)):
+    """Liste les tables Excel actuellement chargées dans DuckDB."""
+    tables = []
+    for name, info in pipeline.structured.tables.items():
+        tables.append({
+            "name": name,
+            "filename": info["filename"],
+            "rows": info["row_count"],
+            "columns": info["user_columns"] or info["columns"],
+        })
+    return {"tables": tables, "count": len(tables)}
+
+@app.post("/reset")
+def reset_index(admin: dict = Depends(require_superadmin)):
+    pipeline.vector_store.reset()
+    if os.path.exists(config.bm25_index_path): os.remove(config.bm25_index_path)
+    ingestion_status["last_result"] = None
+    return {"message": "Index réinitialisé"}
+
+@app.post("/cv-analyze")
+async def cv_analyze(
+    file: UploadFile = File(...),
+    poste: str = Form(""),
+    admin: dict = Depends(require_superadmin),
+):
+    """
+    Analyse un CV (PDF / DOCX / TXT) par rapport à un poste donné.
+    Réservé aux superadmins.
+    """
+    allowed = {".pdf", ".docx", ".txt"}
+    ext = os.path.splitext(file.filename)[1].lower()
+
+    if ext not in allowed:
+        raise HTTPException(
+            400,
+            f"Format non supporté : {ext}. Formats acceptés : PDF, DOCX, TXT"
+        )
+
+    if not pipeline:
+        raise HTTPException(503, "Pipeline RAG non initialisé")
+
+    content = await file.read()
+
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(413, "Fichier trop volumineux (max 10 Mo)")
+
+    try:
+        cv_text = extract_cv_text(content, file.filename)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e))
+
+    if not cv_text.strip():
+        raise HTTPException(422, "Le CV semble vide ou illisible")
+
+    try:
+        result = analyze_cv_with_pipeline(pipeline, cv_text, poste)
+        result["filename"] = file.filename
+        return result
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/lien")
+def add_liens(req: LienRequest, background_tasks: BackgroundTasks, admin: dict = Depends(require_superadmin)):
+    existing = _load_links(); added = [u for u in req.urls if u not in existing]; _save_links(existing + added)
+    def run():
+        lien_status["running"] = True; docs, errors = [], []
+        for url in _load_links():
+            try: docs.append(scrape_url(url))
+            except Exception as e: errors.append({"url": url, "error": str(e)})
+        try: r = pipeline.ingest_documents(docs); r["errors"] = errors; lien_status["last_result"] = r
+        except Exception as e: lien_status["error"] = str(e)
+        finally: lien_status["running"] = False
+    background_tasks.add_task(run)
+    return {"message": f"{len(added)} lien(s) ajouté(s)", "added": added}
+
+@app.get("/lien")
+def list_liens(user: dict = Depends(get_current_user)):
+    return {"links": _load_links(), "status": lien_status}
+
+@app.post("/lien/scrape")
+def scrape_liens(background_tasks: BackgroundTasks, admin: dict = Depends(require_superadmin)):
+    links = _load_links()
+    if not links: raise HTTPException(400, "Aucun lien enregistré")
+    def run():
+        lien_status["running"] = True; docs, errors = [], []
+        for url in links:
+            try: docs.append(scrape_url(url))
+            except Exception as e: errors.append({"url": url, "error": str(e)})
+        try: r = pipeline.ingest_documents(docs); r["errors"] = errors; lien_status["last_result"] = r
+        except Exception as e: lien_status["error"] = str(e)
+        finally: lien_status["running"] = False
+    background_tasks.add_task(run)
+    return {"message": f"Scraping de {len(links)} lien(s) démarré"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api:app", host="0.0.0.0", port=8001, reload=False)

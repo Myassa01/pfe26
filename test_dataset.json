@@ -1,0 +1,672 @@
+{
+  "_comment": "Dataset de test — 70 questions (23 structurées / 28 RAG / 17 mixtes) — v6.3 mots-clés simplifiés en tokens courts",
+  "metadata": {
+    "version": "6.0",
+    "entreprise": "ENGTP — Entreprise Nationale de Grands Travaux Pétroliers",
+    "description": "v6 — 30 questions supplémentaires ajoutées (S016-S023, R016-R028, M011-M017)",
+    "categories": ["structured", "rag", "mixed"],
+    "total": 70,
+    "sources": [
+      "SERVICE.xlsx",
+      "DIRECTION.xlsx",
+      "DEPARTEMENT.xlsx",
+      "KAM_Formations_GTP.xlsx",
+      "Procedure_GTP.pdf",
+      "Charte_Informatique_ENGTP.pdf",
+      "Explications_F.docx"
+    ]
+  },
+  "tests": [
+
+    {
+      "id": "S001",
+      "category": "structured",
+      "subcategory": "direction",
+      "question": "Qui est le Directeur des Ressources Humaines ?",
+      "expected_answer": "BOUDIFA Houssem",
+      "expected_keywords": ["BOUDIFA", "Houssem"],
+      "expected_contains": "BOUDIFA",
+      "source": "DIRECTION.xlsx"
+    },
+    {
+      "id": "S002",
+      "category": "structured",
+      "subcategory": "direction",
+      "question": "Qui dirige la Direction Finances et Comptabilité ?",
+      "expected_answer": "BECHOUCHE Mohamed",
+      "expected_keywords": ["BECHOUCHE", "Mohamed"],
+      "expected_contains": "BECHOUCHE",
+      "source": "DIRECTION.xlsx"
+    },
+    {
+      "id": "S003",
+      "category": "structured",
+      "subcategory": "direction",
+      "question": "Qui est le Directeur QHSE ?",
+      "expected_answer": "BOUKRA Karim",
+      "expected_keywords": ["BOUKRA", "Karim"],
+      "expected_contains": "BOUKRA",
+      "source": "DIRECTION.xlsx"
+    },
+    {
+      "id": "S004",
+      "category": "structured",
+      "subcategory": "direction",
+      "question": "Qui est le Directeur Sûreté Interne d'Établissement (SIE) ?",
+      "expected_answer": "BENALI Ali",
+      "expected_keywords": ["BENALI", "Ali", "SIE"],
+      "expected_contains": "BENALI",
+      "source": "DIRECTION.xlsx"
+    },
+    {
+      "id": "S005",
+      "category": "structured",
+      "subcategory": "direction",
+      "question": "Qui est le Directeur de la Direction des Systèmes d'Information ?",
+      "expected_answer": "DEHAMNIA Ramy (Intérim)",
+      "expected_keywords": ["DEHAMNIA", "Ramy"],
+      "expected_contains": "DEHAMNIA",
+      "source": "DIRECTION.xlsx"
+    },
+    {
+      "id": "S006",
+      "category": "structured",
+      "subcategory": "direction",
+      "question": "Qui est le Directeur Juridique de GTP ?",
+      "expected_answer": "YOUNSI Fares",
+      "expected_keywords": ["YOUNSI", "Fares"],
+      "expected_contains": "YOUNSI",
+      "source": "DIRECTION.xlsx"
+    },
+    {
+      "id": "S007",
+      "category": "structured",
+      "subcategory": "direction",
+      "question": "Qui est le Responsable Sécurité des Systèmes d'Information  ?",
+      "expected_answer": "MOUACI Karim",
+      "expected_keywords": ["MOUACI", "Karim"],
+      "expected_contains": "MOUACI",
+      "source": "DIRECTION.xlsx"
+    },
+    {
+      "id": "S008",
+      "category": "structured",
+      "subcategory": "departement",
+      "question": "Qui est le Chef du Département Gestion des Ressources Humaines ?",
+      "expected_answer": "AREOUR Deniel",
+      "expected_keywords": ["AREOUR", "Deniel"],
+      "expected_contains": "AREOUR",
+      "source": "DEPARTEMENT.xlsx"
+    },
+    {
+      "id": "S009",
+      "category": "structured",
+      "subcategory": "departement",
+      "question": "Qui est le Chef du Département HSE ?",
+      "expected_answer": "BAHRI Mohamed-Elamine",
+      "expected_keywords": ["BAHRI", "Mohamed-Elamine", "HSE"],
+      "expected_contains": "BAHRI",
+      "source": "DEPARTEMENT.xlsx"
+    },
+    {
+      "id": "S010",
+      "category": "structured",
+      "subcategory": "departement",
+      "question": "Qui est le Chef du Département Budget ?",
+      "expected_answer": "BOUSEBA Ibrahim",
+      "expected_keywords": ["BOUSEBA", "Ibrahim"],
+      "expected_contains": "BOUSEBA",
+      "source": "DEPARTEMENT.xlsx"
+    },
+    {
+      "id": "S011",
+      "category": "structured",
+      "subcategory": "departement",
+      "question": "Qui est le Chef du Département Maintenance Industrielle à Hassi R'Mel ?",
+      "expected_answer": "AIDA Abdelkader",
+      "expected_keywords": ["AIDA", "Abdelkader"],
+      "expected_contains": "AIDA",
+      "source": "DEPARTEMENT.xlsx"
+    },
+    {
+      "id": "S012",
+      "category": "structured",
+      "subcategory": "service",
+      "question": "Qui est le Chef du Service Recrutement ?",
+      "expected_answer": "GHEBACHE",
+      "expected_keywords": ["GHEBACHE"],
+      "expected_contains": "GHEBACHE",
+      "source": "SERVICE.xlsx"
+    },
+    {
+      "id": "S013",
+      "category": "structured",
+      "subcategory": "service",
+      "question": "Qui est le Chef du Service Santé ?",
+      "expected_answer": "SERAY Nazim",
+      "expected_keywords": ["SERAY", "Nazim"],
+      "expected_contains": "SERAY",
+      "source": "SERVICE.xlsx"
+    },
+    {
+      "id": "S014",
+      "category": "structured",
+      "subcategory": "service",
+      "question": "Qui dirige le Service Help Desk à la DSI ?",
+      "expected_answer": "LAMRI Fateh",
+      "expected_keywords": ["LAMRI", "Fateh"],
+      "expected_contains": "LAMRI",
+      "source": "SERVICE.xlsx"
+    },
+    {
+      "id": "S015",
+      "category": "structured",
+      "subcategory": "region",
+      "question": "Qui est le Chef du Service Personnel à Skikda (DRK) ?",
+      "expected_answer": "METATLA Aicha",
+      "expected_keywords": ["METATLA", "Aicha"],
+      "expected_contains": "METATLA",
+      "source": "SERVICE.xlsx"
+    },
+
+    {
+      "id": "R001",
+      "category": "rag",
+      "subcategory": "conges",
+      "question": "Quelle est la procédure pour demander un congé annuel ?",
+      "expected_keywords": ["formulaire", "hiérarchique", "DRH", "congé", "visa"],
+      "expected_contains": "formulaire",
+      "source": "Procedure_GTP.pdf — Chapitre 4"
+    },
+    {
+      "id": "R002",
+      "category": "rag",
+      "subcategory": "conges",
+      "question": "Combien de jours de congé annuel un employé de GTP a-t-il droit ?",
+      "expected_answer": "30 jours ouvrables",
+      "expected_keywords": ["30", "ouvrables", "congé"],
+      "expected_contains": "30 jours",
+      "source": "Procedure_GTP.pdf — Chapitre 4.1"
+    },
+    {
+      "id": "R003",
+      "category": "rag",
+      "subcategory": "embauche",
+      "question": "Quels documents faut-il fournir lors de l'embauche à GTP ?",
+      "expected_keywords": ["CNI", "diplôme", "casier", "médical", "photo"],
+      "expected_contains": "casier judiciaire",
+      "source": "Procedure_GTP.pdf — Chapitre 3.2"
+    },
+    {
+      "id": "R004",
+      "category": "rag",
+      "subcategory": "embauche",
+      "question": "Comment obtenir un badge d'accès en tant que nouvel employé ?",
+      "expected_keywords": ["badge", "contrat", "CNI", "photo", "SIE"],
+      "expected_contains": "badge",
+      "source": "Procedure_GTP.pdf — Chapitre 3.3"
+    },
+    {
+      "id": "R005",
+      "category": "rag",
+      "subcategory": "embauche",
+      "question": "Comment se déroule le recrutement à GTP ?",
+      "expected_keywords": ["emploitic", "présélection", "entretien", "contrat"],
+      "expected_contains": "emploitic",
+      "source": "Procedure_GTP.pdf — Chapitre 3.1"
+    },
+    {
+      "id": "R006",
+      "category": "rag",
+      "subcategory": "remuneration",
+      "question": "De quoi est composée la rémunération d'un employé GTP ?",
+      "expected_keywords": ["salaire", "indemnité", "prime", "ancienneté"],
+      "expected_contains": "salaire de base",
+      "source": "Procedure_GTP.pdf — Chapitre 5.1"
+    },
+    {
+      "id": "R007",
+      "category": "rag",
+      "subcategory": "remuneration",
+      "question": "Quelles prestations sociales GTP offre-t-elle à ses employés ?",
+      "expected_keywords": ["aide", "scolaire", "logement", "médicale", "sociales"],
+      "expected_contains": "aide scolaire",
+      "source": "Procedure_GTP.pdf — Chapitre 5.2"
+    },
+    {
+      "id": "R008",
+      "category": "rag",
+      "subcategory": "remuneration",
+      "question": "À quels organismes sociaux GTP affilie-t-elle ses employés dès le premier jour ?",
+      "expected_keywords": ["CNAS", "CASNOS", "CNR", "affiliation"],
+      "expected_contains": "CNAS",
+      "source": "Procedure_GTP.pdf — Chapitre 3.5"
+    },
+    {
+      "id": "R009",
+      "category": "rag",
+      "subcategory": "procedure",
+      "question": "Quelle est la procédure pour demander une formation professionnelle ?",
+      "expected_keywords": ["besoin", "hiérarchique", "plan", "formation", "évaluation"],
+      "expected_contains": "plan de formation",
+      "source": "Procedure_GTP.pdf — Chapitre 6.2"
+    },
+    {
+      "id": "R010",
+      "category": "rag",
+      "subcategory": "procedure",
+      "question": "Quelle est la procédure de départ ou démission d'un employé ?",
+      "expected_keywords": ["préavis", "passation", "restitution", "solde", "attestation"],
+      "expected_contains": "préavis",
+      "source": "Procedure_GTP.pdf — Chapitre 9.2"
+    },
+    {
+      "id": "R011",
+      "category": "rag",
+      "subcategory": "procedure",
+      "question": "Quelles sont les sanctions disciplinaires prévues chez GTP ?",
+      "expected_keywords": ["avertissement", "blâme", "licenciement", "faute", "discipline"],
+      "expected_contains": "avertissement",
+      "source": "Procedure_GTP.pdf — Chapitre 9.1"
+    },
+    {
+      "id": "R012",
+      "category": "rag",
+      "subcategory": "formation",
+      "question": "En quoi consiste la formation sur la Certification ATEX ?",
+      "expected_keywords": ["ATEX", "explosives", "zones", "équipements", "permis"],
+      "expected_contains": "explosives",
+      "source": "Explications_F.docx — N°13"
+    },
+    {
+      "id": "R013",
+      "category": "rag",
+      "subcategory": "formation",
+      "question": "Que couvre la formation Habilitation Électrique ?",
+      "expected_keywords": ["habilitation", "consignation", "tension", "électrisation"],
+      "expected_contains": "habilitation",
+      "source": "Explications_F.docx — N°06"
+    },
+    {
+      "id": "R014",
+      "category": "rag",
+      "subcategory": "formation",
+      "question": "La formation Primavera P6 est-elle obligatoire à GTP ?",
+      "expected_answer": "Non, elle est facultative.",
+      "expected_keywords": ["Primavera", "facultative", "planification"],
+      "expected_contains": "facultative",
+      "source": "KAM_Formations_GTP.xlsx — N°9"
+    },
+    {
+      "id": "R015",
+      "category": "rag",
+      "subcategory": "formation",
+      "question": "Quel est le contenu de la formation ISO 22000 ?",
+      "expected_keywords": ["ISO 22000", "alimentaire", "HACCP", "traçabilité", "restauration"],
+      "expected_contains": "HACCP",
+      "source": "Explications_F.docx — N°12"
+    },
+
+    {
+      "id": "M001",
+      "category": "mixed",
+      "subcategory": "general",
+      "question": "Quels sont les domaines d'activité de GTP ?",
+      "expected_keywords": ["Génie Civil", "Montage", "Canalisation", "Engineering", "Maintenance"],
+      "expected_contains": "Génie Civil",
+      "source": "Procedure_GTP.pdf — Chapitre 1.2"
+    },
+    {
+      "id": "M002",
+      "category": "mixed",
+      "subcategory": "general",
+      "question": "Quelle est la structure organisationnelle de GTP en chiffres ?",
+      "expected_answer": "15 Directions, 74 Départements, 118 Services et 1 841 Postes",
+      "expected_keywords": ["15", "directions", "74", "118", "services"],
+      "expected_contains": "15 directions",
+      "source": "Procedure_GTP.pdf — Introduction"
+    },
+    {
+      "id": "M003",
+      "category": "mixed",
+      "subcategory": "certifications",
+      "question": "Quelles certifications GTP détient-elle et par quel organisme sont-elles délivrées ?",
+      "expected_answer": "ISO 9001:2015, ISO 14001:2015, ISO 45001:2018 — certifiées par INTERTEK",
+      "expected_keywords": ["ISO 9001", "ISO 14001", "ISO 45001", "INTERTEK"],
+      "expected_contains": "INTERTEK",
+      "source": "Procedure_GTP.pdf — Chapitre 1.3"
+    },
+    {
+      "id": "M004",
+      "category": "mixed",
+      "subcategory": "contact",
+      "question": "Qui contacter pour un problème de sécurité informatique ou un incident SI ?",
+      "expected_answer": "MOUACI Karim, Responsable Sécurité des Systèmes d'Information (RSSI)",
+      "expected_keywords": ["MOUACI", "Karim", "RSSI"],
+      "expected_contains": "MOUACI",
+      "source": "DIRECTION.xlsx + Charte_Informatique_ENGTP.pdf"
+    },
+    {
+      "id": "M005",
+      "category": "mixed",
+      "subcategory": "contact",
+      "question": "Qui contacter pour un accident de travail ou un problème HSE ?",
+      "expected_answer": "BOUKRA Karim, Directeur QHSE",
+      "expected_keywords": ["BOUKRA", "Karim", "QHSE"],
+      "expected_contains": "BOUKRA",
+      "source": "Procedure_GTP.pdf + DIRECTION.xlsx"
+    },
+    {
+      "id": "M006",
+      "category": "mixed",
+      "subcategory": "informatique",
+      "question": "Que doit faire un employé si son mot de passe est compromis ou s'il part en mission à l'étranger ?",
+      "expected_keywords": ["mot de passe", "mission", "étranger"],
+      "expected_contains": "mot de passe",
+      "source": "Charte_Informatique_ENGTP.pdf — Articles 6 et 14"
+    },
+    {
+      "id": "M007",
+      "category": "mixed",
+      "subcategory": "informatique",
+      "question": "Quelles mesures de sécurité doit prendre un employé sur son poste de travail ?",
+      "expected_keywords": ["verrouiller", "antivirus", "éteindre", "session"],
+      "expected_contains": "verrouiller",
+      "source": "Charte_Informatique_ENGTP.pdf — Article 10"
+    },
+    {
+      "id": "M008",
+      "category": "mixed",
+      "subcategory": "informatique",
+      "question": "Qui contacter en cas d'alerte antivirus sur son poste de travail, et quelle est la procédure à suivre ?",
+      "expected_answer": "Contacter MOUACI Karim, Responsable Sécurité des Systèmes d'Information (RSSI). La procédure impose d'informer immédiatement le service concerné de toute alerte de sécurité et de ne pas désactiver l'antivirus.",
+      "expected_keywords": ["MOUACI", "Karim", "antivirus", "alerte"],
+      "expected_contains": "MOUACI Karim",
+      "source": "DIRECTION.xlsx + Charte_Informatique_ENGTP.pdf — Article 10"
+    },
+    {
+      "id": "M009",
+      "category": "mixed",
+      "subcategory": "formation",
+      "question": "Quelle formation obligatoire est spécifiquement liée à la manipulation de produits dangereux sur chantier ?",
+      "expected_answer": "Formation N°04 : Manipulation des Matières et Produits Chimiques Dangereux",
+      "expected_keywords": ["chimiques", "dangereux", "FDS", "EPI"],
+      "expected_contains": "produits chimiques",
+      "source": "KAM_Formations_GTP.xlsx + Explications_F.docx"
+    },
+    {
+      "id": "M010",
+      "category": "mixed",
+      "subcategory": "recrutement",
+      "question": "Sur quel site web GTP publie-t-elle ses offres d'emploi ?",
+      "expected_answer": "www.emploitic.com/engtp",
+      "expected_keywords": ["emploitic", "engtp"],
+      "expected_contains": "emploitic",
+      "source": "Procedure_GTP.pdf — Chapitre 3.1"
+    },
+
+    {
+      "id": "S016",
+      "category": "structured",
+      "subcategory": "direction",
+      "question": "Qui est le Directeur Général Adjoint Technique de GTP ?",
+      "expected_answer": "MOSTEFAOUI Mohamed",
+      "expected_keywords": ["MOSTEFAOUI", "Mohamed", "DGAT"],
+      "expected_contains": "MOSTEFAOUI",
+      "source": "DIRECTION.xlsx"
+    },
+    {
+      "id": "S017",
+      "category": "structured",
+      "subcategory": "direction",
+      "question": "Qui dirige la Direction Centrale Logistique ?",
+      "expected_answer": "SAHARAOUI Djamel",
+      "expected_keywords": ["SAHARAOUI", "Djamel", "DCL"],
+      "expected_contains": "SAHARAOUI",
+      "source": "DIRECTION.xlsx"
+    },
+    {
+      "id": "S018",
+      "category": "structured",
+      "subcategory": "departement",
+      "question": "Qui est le Chef du Département Oeuvres Sociales ?",
+      "expected_answer": "BRIBER Kamel Eddine",
+      "expected_keywords": ["BRIBER", "Kamel", "Oeuvres Sociales"],
+      "expected_contains": "BRIBER",
+      "source": "DEPARTEMENT.xlsx"
+    },
+    {
+      "id": "S019",
+      "category": "structured",
+      "subcategory": "departement",
+      "question": "Qui est le Chef du Département Développement et Data Management à la DSI ?",
+      "expected_answer": "KEDDAR Karima",
+      "expected_keywords": ["KEDDAR", "Karima"],
+      "expected_contains": "KEDDAR",
+      "source": "DEPARTEMENT.xlsx"
+    },
+    {
+      "id": "S020",
+      "category": "structured",
+      "subcategory": "service",
+      "question": "Qui est responsable du Service Paie et Contrôle ?",
+      "expected_answer": "DJENNANE",
+      "expected_keywords": ["DJENNANE", "Paie"],
+      "expected_contains": "DJENNANE",
+      "source": "SERVICE.xlsx"
+    },
+    {
+      "id": "S021",
+      "category": "structured",
+      "subcategory": "service",
+      "question": "Qui est le Chef du Service Contrôle de Gestion ?",
+      "expected_answer": "AOUCHICHE Ibrahim",
+      "expected_keywords": ["AOUCHICHE", "Ibrahim"],
+      "expected_contains": "AOUCHICHE",
+      "source": "SERVICE.xlsx"
+    },
+    {
+      "id": "S022",
+      "category": "structured",
+      "subcategory": "service",
+      "question": "Qui est le Chef du Service Trésorerie et Finances ?",
+      "expected_answer": "TARAIROUR Souhila",
+      "expected_keywords": ["TARAIROUR", "Souhila", "Trésorerie"],
+      "expected_contains": "TARAIROUR",
+      "source": "SERVICE.xlsx"
+    },
+    {
+      "id": "S023",
+      "category": "structured",
+      "subcategory": "direction",
+      "question": "Qui est le Directeur Engineering de GTP ?",
+      "expected_answer": "BERRAF Mohamed",
+      "expected_keywords": ["BERRAF", "Mohamed"],
+      "expected_contains": "BERRAF",
+      "source": "DIRECTION.xlsx"
+    },
+
+    {
+      "id": "R016",
+      "category": "rag",
+      "subcategory": "conges",
+      "question": "Quels sont les types de congés exceptionnels accordés chez GTP ?",
+      "expected_keywords": ["mariage", "décès", "exceptionnel"],
+      "expected_contains": "mariage",
+      "source": "Procedure_GTP.pdf"
+    },
+    {
+      "id": "R017",
+      "category": "rag",
+      "subcategory": "procedure",
+      "question": "Quelle est la procédure de mutation interne d'un employé chez GTP ?",
+      "expected_keywords": ["mutation", "accord", "poste", "DRH"],
+      "expected_contains": "mutation",
+      "source": "Procedure_GTP.pdf"
+    },
+    {
+      "id": "R018",
+      "category": "rag",
+      "subcategory": "procedure",
+      "question": "Comment se déroule l'évaluation annuelle des performances chez GTP ?",
+      "expected_keywords": ["évaluation", "notation", "objectifs", "hiérarchique"],
+      "expected_contains": "évaluation",
+      "source": "Procedure_GTP.pdf"
+    },
+    {
+      "id": "R019",
+      "category": "rag",
+      "subcategory": "procedure",
+      "question": "Quelle est la durée de la période d'essai chez GTP ?",
+      "expected_keywords": ["période d'essai", "mois", "renouvellement"],
+      "expected_contains": "période d'essai",
+      "source": "Procedure_GTP.pdf"
+    },
+    {
+      "id": "R020",
+      "category": "rag",
+      "subcategory": "remuneration",
+      "question": "Comment est calculée la prime d'ancienneté chez GTP ?",
+      "expected_keywords": ["ancienneté", "années", "salaire"],
+      "expected_contains": "ancienneté",
+      "source": "Procedure_GTP.pdf"
+    },
+    {
+      "id": "R021",
+      "category": "rag",
+      "subcategory": "formation",
+      "question": "Que couvre la formation Travaux en Hauteur chez GTP ?",
+      "expected_keywords": ["hauteur", "harnais", "chute"],
+      "expected_contains": "hauteur",
+      "source": "Explications_F.docx"
+    },
+    {
+      "id": "R022",
+      "category": "rag",
+      "subcategory": "formation",
+      "question": "En quoi consiste la formation Secourisme et Premiers Secours ?",
+      "expected_keywords": ["secourisme", "secours", "urgence"],
+      "expected_contains": "secourisme",
+      "source": "Explications_F.docx"
+    },
+    {
+      "id": "R023",
+      "category": "rag",
+      "subcategory": "formation",
+      "question": "Quelles formations sont obligatoires pour travailler sur chantier chez GTP ?",
+      "expected_keywords": ["obligatoire", "chantier", "HSE"],
+      "expected_contains": "obligatoire",
+      "source": "KAM_Formations_GTP.xlsx"
+    },
+    {
+      "id": "R024",
+      "category": "rag",
+      "subcategory": "informatique",
+      "question": "Quels sont les droits et obligations d'un employé concernant l'utilisation d'internet chez GTP ?",
+      "expected_keywords": ["internet", "professionnel", "interdit", "surveillance"],
+      "expected_contains": "internet",
+      "source": "Charte_Informatique_ENGTP.pdf"
+    },
+    {
+      "id": "R025",
+      "category": "rag",
+      "subcategory": "informatique",
+      "question": "Quelle est la politique de GTP concernant l'utilisation des messageries personnelles sur le réseau interne ?",
+      "expected_keywords": ["messagerie", "personnelle", "interdit", "réseau"],
+      "expected_contains": "messagerie",
+      "source": "Charte_Informatique_ENGTP.pdf"
+    },
+    {
+      "id": "R026",
+      "category": "rag",
+      "subcategory": "informatique",
+      "question": "Quelles sont les règles d'utilisation des supports amovibles (clés USB) chez GTP ?",
+      "expected_keywords": ["USB", "amovible", "interdit", "autorisation"],
+      "expected_contains": "USB",
+      "source": "Charte_Informatique_ENGTP.pdf"
+    },
+    {
+      "id": "R027",
+      "category": "rag",
+      "subcategory": "informatique",
+      "question": "Quelles sont les sanctions prévues en cas de violation de la charte informatique GTP ?",
+      "expected_keywords": ["sanction", "violation", "charte", "disciplinaire"],
+      "expected_contains": "sanction",
+      "source": "Charte_Informatique_ENGTP.pdf"
+    },
+    {
+      "id": "R028",
+      "category": "rag",
+      "subcategory": "procedure",
+      "question": "Quelle est la procédure de demande d'avance sur salaire chez GTP ?",
+      "expected_keywords": ["avance", "salaire", "DRH"],
+      "expected_contains": "avance",
+      "source": "Procedure_GTP.pdf"
+    },
+
+    {
+      "id": "M011",
+      "category": "mixed",
+      "subcategory": "general",
+      "question": "Quels sont les projets phares réalisés par GTP dans le secteur des hydrocarbures ?",
+      "expected_keywords": ["pipeline", "chantier", "réalisation"],
+      "expected_contains": "pipeline",
+      "source": "Procedure_GTP.pdf"
+    },
+    {
+      "id": "M012",
+      "category": "mixed",
+      "subcategory": "contact",
+      "question": "Qui contacter pour une question relative à la paie ou aux bulletins de salaire ?",
+      "expected_keywords": ["paie", "salaire", "DRH"],
+      "expected_contains": "paie",
+      "source": "DIRECTION.xlsx + Procedure_GTP.pdf"
+    },
+    {
+      "id": "M013",
+      "category": "mixed",
+      "subcategory": "formation",
+      "question": "Combien de formations obligatoires existent chez GTP et lesquelles concernent la sécurité ?",
+      "expected_keywords": ["obligatoire", "HSE", "ATEX"],
+      "expected_contains": "obligatoire",
+      "source": "KAM_Formations_GTP.xlsx + Explications_F.docx"
+    },
+    {
+      "id": "M014",
+      "category": "mixed",
+      "subcategory": "informatique",
+      "question": "Que risque un employé qui installe un logiciel non autorisé sur son poste GTP ?",
+      "expected_keywords": ["logiciel", "autorisé", "sanction", "charte"],
+      "expected_contains": "sanction",
+      "source": "Charte_Informatique_ENGTP.pdf + DIRECTION.xlsx"
+    },
+    {
+      "id": "M015",
+      "category": "mixed",
+      "subcategory": "recrutement",
+      "question": "Quelles sont les étapes complètes du processus de recrutement jusqu'à l'intégration chez GTP ?",
+      "expected_keywords": ["présélection", "entretien", "contrat", "intégration"],
+      "expected_contains": "intégration",
+      "source": "Procedure_GTP.pdf — Chapitre 3"
+    },
+    {
+      "id": "M016",
+      "category": "mixed",
+      "subcategory": "certifications",
+      "question": "Depuis quelle année GTP est-elle certifiée ISO 45001 et que couvre cette certification ?",
+      "expected_keywords": ["ISO 45001", "sécurité", "travail"],
+      "expected_contains": "ISO 45001",
+      "source": "Procedure_GTP.pdf — Chapitre 1.3"
+    },
+    {
+      "id": "M017",
+      "category": "mixed",
+      "subcategory": "general",
+      "question": "Quelle est l'adresse du siège social de GTP et quelles sont ses implantations régionales ?",
+      "expected_keywords": ["Réghaïa", "Skikda", "Arzew"],
+      "expected_contains": "Réghaïa",
+      "source": "Procedure_GTP.pdf — Chapitre 1.1"
+    }
+
+  ]
+}

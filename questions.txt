@@ -1,0 +1,21 @@
+# Fichier de questions — une question par ligne
+# Les lignes commençant par # sont des commentaires
+# Pas besoin de réponses attendues !
+
+# === QUESTIONS RAG (documents PDF) ===
+Quelle est la procédure pour demander un congé annuel ?
+Combien de jours de congé annuel a droit un employé ?
+Quelle est la durée du congé de maternité ?
+Quels documents sont nécessaires pour constituer un dossier d'embauche ?
+Quelles sont les règles d'utilisation des équipements informatiques ?
+Quelle est la politique de confidentialité des données à GTP ?
+Quelles sont les sanctions en cas de violation de la charte informatique ?
+Comment se déroule la procédure d'évaluation annuelle des employés ?
+
+# === QUESTIONS STRUCTURÉES (Excel/organigramme) ===
+Qui est le directeur des ressources humaines ?
+Qui dirige la Direction des Systèmes d'Information ?
+Quels sont les services rattachés à la DSI ?
+Quels sont les services de la direction financière ?
+Qui est responsable du service recrutement ?
+Qui est le chef du service Help Desk ?
