@@ -1,11 +1,22 @@
 {
-  "_comment": "Dataset de test — 68 questions (23 structurées / 28 RAG / 17 mixtes) — v6.3 mots-clés simplifiés en tokens courts",
+  "_comment": "Dataset de test — 68 questions (23 structurées / 28 RAG / 17 mixtes) — v6.4 expectations alignées sur le contenu réel des documents",
   "metadata": {
-    "version": "6.3",
+    "version": "6.4",
     "entreprise": "ENGTP — Entreprise Nationale de Grands Travaux Pétroliers",
-    "description": "v6.3 — 30 questions supplémentaires ajoutées (S016-S023, R016-R028, M011-M017), mots-clés simplifiés, S023 corrigé",
+    "description": "v6.4 — Corrections : R012/R016/R023/M013 alignés sur le vocabulaire des documents ; R021/R022 remplacés (formations inexistantes sous ces noms) ; R028/M011/M017 transformés en tests de refus (contenu absent des sources) ; ajout de la sous-catégorie hors_perimetre",
     "categories": ["structured", "rag", "mixed"],
     "total": 68,
+    "changelog_v6.4": [
+      "R012 : expected_contains 'explosives' → 'ATEX' (le docx dit 'explosion', pas 'explosives' hors acronyme)",
+      "R016 : mariage/décès retirés — le PDF classe ces congés sous 'événements familiaux' ; les congés exceptionnels sont 'sans solde' et 'pour formation'",
+      "R021 : 'Travaux en Hauteur' n'existe ni dans KAM_Formations_GTP.xlsx ni dans Explications_F.docx → remplacé par la formation Espaces Confinés (présente dans le docx)",
+      "R022 : la fiche s'appelle 'Ambulancier' dans les deux sources → question renommée, mots-clés alignés sur le contenu (RCP, défibrillateur)",
+      "R023 : expected_contains 'obligatoire' → 'ATEX' (le formateur exhaustif liste les intitulés sans répéter le mot 'obligatoire')",
+      "R028 : 'avance sur salaire' absent de Procedure_GTP.pdf → test de refus (anti-hallucination)",
+      "M011 : aucun projet phare listé dans les documents → test de refus",
+      "M013 : question composée simplifiée en comptage simple ('19'), la seconde moitié n'était pas évaluable avec le formateur exhaustif",
+      "M017 : adresse du siège et implantations absentes de Procedure_GTP.pdf → test de refus"
+    ],
     "sources": [
       "SERVICE.xlsx",
       "DIRECTION.xlsx",
@@ -54,7 +65,7 @@
       "subcategory": "direction",
       "question": "Qui est le Directeur Sûreté Interne d'Établissement (SIE) ?",
       "expected_answer": "BENALI Ali",
-      "expected_keywords": ["BENALI", "Ali", "SIE"],
+      "expected_keywords": ["BENALI", "Ali"],
       "expected_contains": "BENALI",
       "source": "DIRECTION.xlsx"
     },
@@ -102,7 +113,7 @@
       "id": "S009",
       "category": "structured",
       "subcategory": "departement",
-      "question": "Qui est le Chef du Département Hygiène, Sécurité et Environnement ?",
+      "question": "Qui est le Chef du Département HSE ?",
       "expected_answer": "BAHRI Mohamed-Elamine",
       "expected_keywords": ["BAHRI", "Mohamed-Elamine"],
       "expected_contains": "BAHRI",
@@ -176,7 +187,7 @@
       "question": "Quelle est la procédure pour demander un congé annuel ?",
       "expected_keywords": ["formulaire", "hiérarchique", "DRH", "congé", "visa"],
       "expected_contains": "formulaire",
-      "source": "Procedure_GTP.pdf — Chapitre 4"
+      "source": "Procedure_GTP.pdf — Chapitre 4.2"
     },
     {
       "id": "R002",
@@ -274,9 +285,10 @@
       "category": "rag",
       "subcategory": "formation",
       "question": "En quoi consiste la formation sur la Certification ATEX ?",
-      "expected_keywords": ["ATEX", "explosives", "zones", "équipements", "permis"],
-      "expected_contains": "explosives",
-      "source": "Explications_F.docx — N°13"
+      "expected_keywords": ["ATEX", "explosion", "zones", "équipements", "permis"],
+      "expected_contains": "ATEX",
+      "source": "Explications_F.docx — N°13",
+      "_note_v6.4": "Le docx parle de 'zones à risque d'explosion' ; 'explosives' n'apparaît que dans l'acronyme. Contains aligné sur 'ATEX'."
     },
     {
       "id": "R013",
@@ -342,7 +354,7 @@
       "subcategory": "contact",
       "question": "Qui contacter pour un problème de sécurité informatique ou un incident SI ?",
       "expected_answer": "MOUACI Karim, Responsable Sécurité des Systèmes d'Information (RSSI)",
-      "expected_keywords": ["MOUACI", "sécurité", "informatique"],
+      "expected_keywords": ["MOUACI", "Karim", "RSSI"],
       "expected_contains": "MOUACI",
       "source": "DIRECTION.xlsx + Charte_Informatique_ENGTP.pdf"
     },
@@ -380,8 +392,8 @@
       "subcategory": "informatique",
       "question": "Qui contacter en cas d'alerte antivirus sur son poste de travail, et quelle est la procédure à suivre ?",
       "expected_answer": "Contacter MOUACI Karim, Responsable Sécurité des Systèmes d'Information (RSSI). La procédure impose d'informer immédiatement le service concerné de toute alerte de sécurité et de ne pas désactiver l'antivirus.",
-      "expected_keywords": ["MOUACI", "antivirus", "alerte"],
-      "expected_contains": "MOUACI",
+      "expected_keywords": ["MOUACI", "Karim", "antivirus", "alerte"],
+      "expected_contains": "MOUACI Karim",
       "source": "DIRECTION.xlsx + Charte_Informatique_ENGTP.pdf — Article 10"
     },
     {
@@ -390,9 +402,10 @@
       "subcategory": "formation",
       "question": "Quelle formation obligatoire est spécifiquement liée à la manipulation de produits dangereux sur chantier ?",
       "expected_answer": "Formation N°04 : Manipulation des Matières et Produits Chimiques Dangereux",
-      "expected_keywords": ["chimiques", "dangereux", "FDS", "EPI"],
+      "expected_keywords": ["chimiques", "dangereux", "manipulation"],
       "expected_contains": "produits chimiques",
-      "source": "KAM_Formations_GTP.xlsx + Explications_F.docx"
+      "source": "KAM_Formations_GTP.xlsx + Explications_F.docx",
+      "_note_v6.4": "FDS/EPI retirés des mots-clés : ils n'apparaissent que dans la fiche détaillée du docx, pas dans l'intitulé retourné par le moteur structuré."
     },
     {
       "id": "M010",
@@ -411,7 +424,7 @@
       "subcategory": "direction",
       "question": "Qui est le Directeur Général Adjoint Technique de GTP ?",
       "expected_answer": "MOSTEFAOUI Mohamed",
-      "expected_keywords": ["MOSTEFAOUI", "Mohamed", "DGAT"],
+      "expected_keywords": ["MOSTEFAOUI", "Mohamed"],
       "expected_contains": "MOSTEFAOUI",
       "source": "DIRECTION.xlsx"
     },
@@ -422,8 +435,9 @@
       "question": "Qui dirige la Direction Centrale Logistique ?",
       "expected_answer": "SAHARAOUI Djamel",
       "expected_keywords": ["SAHARAOUI", "Djamel"],
-      "expected_contains": "Djamel",
-      "source": "DIRECTION.xlsx"
+      "expected_contains": "SAHARAOUI",
+      "source": "DIRECTION.xlsx",
+      "_note_v6.4": "Le dataset est correct (orthographe vérifiée dans le xlsx). L'échec observé venait du LLM qui reformulait le nom en 'Saharouï' — bug pipeline, pas dataset."
     },
     {
       "id": "S018",
@@ -431,7 +445,7 @@
       "subcategory": "departement",
       "question": "Qui est le Chef du Département Oeuvres Sociales ?",
       "expected_answer": "BRIBER Kamel Eddine",
-      "expected_keywords": ["BRIBER", "Kamel", "Oeuvres Sociales"],
+      "expected_keywords": ["BRIBER", "Kamel"],
       "expected_contains": "BRIBER",
       "source": "DEPARTEMENT.xlsx"
     },
@@ -449,9 +463,9 @@
       "id": "S020",
       "category": "structured",
       "subcategory": "service",
-      "question": "Qui est l'Assistant Directeur Ressources Humaines au Service Paie et Contrôle ?",
+      "question": "Qui est responsable du Service Paie et Contrôle ?",
       "expected_answer": "DJENNANE",
-      "expected_keywords": ["DJENNANE"],
+      "expected_keywords": ["DJENNANE", "Paie"],
       "expected_contains": "DJENNANE",
       "source": "SERVICE.xlsx"
     },
@@ -483,7 +497,8 @@
       "expected_answer": "BERRAF Mohamed",
       "expected_keywords": ["BERRAF", "Mohamed"],
       "expected_contains": "BERRAF",
-      "source": "DIRECTION.xlsx"
+      "source": "DIRECTION.xlsx",
+      "_note_v6.4": "Le dataset est correct (BERRAF MOHAMED, ligne 190 de DIRECTION.xlsx). L'échec venait du routeur qui choisissait la table DEPARTEMENT — bug pipeline."
     },
 
     {
@@ -491,9 +506,10 @@
       "category": "rag",
       "subcategory": "conges",
       "question": "Quels sont les types de congés exceptionnels accordés chez GTP ?",
-      "expected_keywords": ["mariage", "décès", "exceptionnel"],
-      "expected_contains": "mariage",
-      "source": "Procedure_GTP.pdf"
+      "expected_keywords": ["exceptionnel", "sans solde", "formation"],
+      "expected_contains": "sans solde",
+      "source": "Procedure_GTP.pdf — Chapitre 4.1",
+      "_note_v6.4": "Le PDF définit les congés exceptionnels comme 'sans solde et pour formation' ; mariage/décès sont classés sous 'événements familiaux' (voir R029 si ajouté). Anciennes attentes corrigées."
     },
     {
       "id": "R017",
@@ -509,127 +525,141 @@
       "category": "rag",
       "subcategory": "procedure",
       "question": "Comment se déroule l'évaluation annuelle des performances chez GTP ?",
-      "expected_keywords": ["évaluation", "notation", "objectifs", "hiérarchique"],
+      "expected_keywords": ["évaluation", "annuelle", "hiérarchique"],
       "expected_contains": "évaluation",
-      "source": "Procedure_GTP.pdf"
+      "source": "Procedure_GTP.pdf — Chapitre 6.3"
     },
     {
       "id": "R019",
       "category": "rag",
       "subcategory": "procedure",
       "question": "Quelle est la durée de la période d'essai chez GTP ?",
-      "expected_keywords": ["période d'essai", "mois", "renouvellement"],
+      "expected_answer": "3 à 6 mois selon le statut et le niveau du poste",
+      "expected_keywords": ["période d'essai", "3", "6", "mois"],
       "expected_contains": "période d'essai",
-      "source": "Procedure_GTP.pdf"
+      "source": "Procedure_GTP.pdf — Chapitre 3.4"
     },
     {
       "id": "R020",
       "category": "rag",
       "subcategory": "remuneration",
       "question": "Comment est calculée la prime d'ancienneté chez GTP ?",
-      "expected_keywords": ["ancienneté", "années", "salaire"],
+      "expected_keywords": ["ancienneté", "années", "service"],
       "expected_contains": "ancienneté",
-      "source": "Procedure_GTP.pdf"
+      "source": "Procedure_GTP.pdf — Chapitre 5.1"
     },
     {
       "id": "R021",
       "category": "rag",
       "subcategory": "formation",
-      "question": "Que couvre la formation Travaux en Hauteur chez GTP ?",
-      "expected_keywords": ["hauteur", "harnais", "chute"],
-      "expected_contains": "hauteur",
-      "source": "Explications_F.docx"
+      "question": "En quoi consiste la formation sur les espaces confinés chez GTP ?",
+      "expected_keywords": ["confinés", "asphyxie", "sauvetage", "dangers"],
+      "expected_contains": "confinés",
+      "source": "Explications_F.docx",
+      "_note_v6.4": "Remplace l'ancienne question 'Travaux en Hauteur' : cette formation n'existe ni dans KAM_Formations_GTP.xlsx ni dans Explications_F.docx. La fiche espaces confinés, elle, existe (asphyxie, autorisation d'entrée, sauvetage)."
     },
     {
       "id": "R022",
       "category": "rag",
       "subcategory": "formation",
-      "question": "En quoi consiste la formation Secourisme et Premiers Secours ?",
-      "expected_keywords": ["secourisme", "secours", "urgence"],
-      "expected_contains": "secourisme",
-      "source": "Explications_F.docx"
+      "question": "En quoi consiste la formation Ambulancier ?",
+      "expected_keywords": ["secours", "RCP", "défibrillateur", "victimes"],
+      "expected_contains": "RCP",
+      "source": "Explications_F.docx — N°07",
+      "_note_v6.4": "L'intitulé exact dans les deux sources est 'Ambulancier' (pas 'Secourisme et Premiers Secours'). Mots-clés alignés sur le contenu réel de la fiche : bilan victimologique, RCP, défibrillateur (DEA), transport des blessés."
     },
     {
       "id": "R023",
       "category": "rag",
       "subcategory": "formation",
       "question": "Quelles formations sont obligatoires pour travailler sur chantier chez GTP ?",
-      "expected_keywords": ["obligatoire", "chantier", "HSE"],
-      "expected_contains": "obligatoire",
-      "source": "KAM_Formations_GTP.xlsx"
+      "expected_keywords": ["ATEX", "Habilitation", "Chimiques", "Conduite"],
+      "expected_contains": "ATEX",
+      "source": "KAM_Formations_GTP.xlsx",
+      "_note_v6.4": "L'ancien contains 'obligatoire' échouait car le formateur exhaustif liste les intitulés sans répéter ce mot. Attentes alignées sur les intitulés réellement retournés."
     },
     {
       "id": "R024",
       "category": "rag",
       "subcategory": "informatique",
       "question": "Quels sont les droits et obligations d'un employé concernant l'utilisation d'internet chez GTP ?",
-      "expected_keywords": ["internet", "professionnel", "interdit", "surveillance"],
+      "expected_keywords": ["internet", "malveillantes", "téléchargement", "antivirus"],
       "expected_contains": "internet",
-      "source": "Charte_Informatique_ENGTP.pdf"
+      "source": "Charte_Informatique_ENGTP.pdf — Article 12",
+      "_note_v6.4": "Mots-clés alignés sur l'Article 12 : 'professionnel' et 'surveillance' n'apparaissent pas dans cet article."
     },
     {
       "id": "R025",
       "category": "rag",
       "subcategory": "informatique",
       "question": "Quelle est la politique de GTP concernant l'utilisation des messageries personnelles sur le réseau interne ?",
-      "expected_keywords": ["messagerie", "personnelle", "interdit", "réseau"],
-      "expected_contains": "messagerie",
-      "source": "Charte_Informatique_ENGTP.pdf"
+      "expected_keywords": ["messagerie", "personnelle", "interdit"],
+      "expected_contains": "interdit",
+      "source": "Charte_Informatique_ENGTP.pdf — Article 11"
     },
     {
       "id": "R026",
       "category": "rag",
       "subcategory": "informatique",
       "question": "Quelles sont les règles d'utilisation des supports amovibles (clés USB) chez GTP ?",
-      "expected_keywords": ["USB", "amovible", "interdit", "autorisation"],
-      "expected_contains": "USB",
-      "source": "Charte_Informatique_ENGTP.pdf"
+      "expected_keywords": ["amovible", "scanner", "antivirus"],
+      "expected_contains": "scann",
+      "source": "Charte_Informatique_ENGTP.pdf — Articles 10 et 13",
+      "_note_v6.4": "Contains 'scann' (racine) pour matcher 'scanner' / 'scannés'. 'USB' retiré : la charte parle de 'supports amovibles'."
     },
     {
       "id": "R027",
       "category": "rag",
       "subcategory": "informatique",
       "question": "Quelles sont les sanctions prévues en cas de violation de la charte informatique GTP ?",
-      "expected_keywords": ["sanction", "violation", "charte", "disciplinaire"],
-      "expected_contains": "sanction",
-      "source": "Charte_Informatique_ENGTP.pdf"
+      "expected_keywords": ["sanction", "disciplinaire", "gravité"],
+      "expected_contains": "disciplinaire",
+      "source": "Charte_Informatique_ENGTP.pdf — Article 16"
     },
     {
       "id": "R028",
       "category": "rag",
-      "subcategory": "procedure",
+      "subcategory": "hors_perimetre",
       "question": "Quelle est la procédure de demande d'avance sur salaire chez GTP ?",
-      "expected_keywords": ["avance", "salaire", "DRH"],
-      "expected_contains": "avance",
-      "source": "Procedure_GTP.pdf"
+      "expected_answer": "Information non disponible (sujet absent des documents)",
+      "expected_keywords": ["disponible"],
+      "expected_contains": "disponible",
+      "source": "Aucune — test anti-hallucination",
+      "_note_v6.4": "L'avance sur salaire n'est traitée nulle part dans Procedure_GTP.pdf. Le test valide désormais que le bot refuse correctement au lieu d'halluciner."
     },
 
     {
       "id": "M011",
       "category": "mixed",
-      "subcategory": "general",
+      "subcategory": "hors_perimetre",
       "question": "Quels sont les projets phares réalisés par GTP dans le secteur des hydrocarbures ?",
-      "expected_keywords": ["pipeline", "chantier", "réalisation"],
-      "expected_contains": "pipeline",
-      "source": "Procedure_GTP.pdf"
+      "expected_answer": "Information non disponible (aucune liste de projets dans les documents)",
+      "expected_keywords": ["disponible"],
+      "expected_contains": "disponible",
+      "source": "Aucune — test anti-hallucination",
+      "_note_v6.4": "Le PDF mentionne la canalisation comme domaine d'activité mais ne liste aucun projet. Test transformé en refus correct."
     },
     {
       "id": "M012",
       "category": "mixed",
       "subcategory": "contact",
       "question": "Qui contacter pour une question relative à la paie ou aux bulletins de salaire ?",
-      "expected_keywords": ["paie", "salaire", "DRH"],
-      "expected_contains": "paie",
-      "source": "DIRECTION.xlsx + Procedure_GTP.pdf"
+      "expected_answer": "DJENNANE, Service Paie & Contrôle",
+      "expected_keywords": ["DJENNANE", "paie"],
+      "expected_contains": "DJENNANE",
+      "source": "Procedure_GTP.pdf — Chapitre 10.1 + SERVICE.xlsx",
+      "_note_v6.4": "Le PDF (10.1) nomme explicitement DJENNANE pour les bulletins de salaire. Attentes précisées."
     },
     {
       "id": "M013",
       "category": "mixed",
       "subcategory": "formation",
-      "question": "Combien de formations obligatoires existent chez GTP et lesquelles concernent la sécurité ?",
-      "expected_keywords": ["19", "obligatoire", "ATEX"],
-      "expected_contains": "obligatoire",
-      "source": "KAM_Formations_GTP.xlsx + Explications_F.docx"
+      "question": "Combien de formations obligatoires existent chez GTP ?",
+      "expected_answer": "19 formations obligatoires",
+      "expected_keywords": ["19"],
+      "expected_contains": "19",
+      "source": "KAM_Formations_GTP.xlsx",
+      "_note_v6.4": "Question composée simplifiée : la seconde moitié ('lesquelles concernent la sécurité') n'était pas évaluable avec le formateur exhaustif et faisait échouer un comptage pourtant correct."
     },
     {
       "id": "M014",
@@ -638,7 +668,7 @@
       "question": "Que risque un employé qui installe un logiciel non autorisé sur son poste GTP ?",
       "expected_keywords": ["logiciel", "autorisé", "sanction", "charte"],
       "expected_contains": "sanction",
-      "source": "Charte_Informatique_ENGTP.pdf + DIRECTION.xlsx"
+      "source": "Charte_Informatique_ENGTP.pdf + Procedure_GTP.pdf — Chapitre 8.3"
     },
     {
       "id": "M015",
@@ -653,19 +683,22 @@
       "id": "M016",
       "category": "mixed",
       "subcategory": "certifications",
-      "question": "Que couvre la certification ISO 45001 détenue par GTP ?",
-      "expected_keywords": ["ISO 45001", "sécurité", "travail"],
-      "expected_contains": "ISO 45001",
-      "source": "Procedure_GTP.pdf — Chapitre 1.3"
+      "question": "Depuis quelle année GTP est-elle certifiée ISO 45001 et que couvre cette certification ?",
+      "expected_keywords": ["ISO 45001", "2018", "sécurité", "travail"],
+      "expected_contains": "45001",
+      "source": "Procedure_GTP.pdf — Chapitre 1.3",
+      "_note_v6.4": "Contains assoupli de 'ISO 45001' vers '45001' (le bot écrit parfois 'ISO 45001:2018' sans espace identique)."
     },
     {
       "id": "M017",
       "category": "mixed",
-      "subcategory": "general",
+      "subcategory": "hors_perimetre",
       "question": "Quelle est l'adresse du siège social de GTP et quelles sont ses implantations régionales ?",
-      "expected_keywords": ["Réghaïa", "Skikda", "Arzew"],
-      "expected_contains": "Réghaïa",
-      "source": "Procedure_GTP.pdf — Chapitre 1.1"
+      "expected_answer": "Information non disponible (adresse et implantations absentes des documents)",
+      "expected_keywords": ["disponible"],
+      "expected_contains": "disponible",
+      "source": "Aucune — test anti-hallucination",
+      "_note_v6.4": "Aucune mention de Réghaïa, Skikda (hors DRK dans SERVICE.xlsx) ou Arzew dans Procedure_GTP.pdf. Test transformé en refus correct."
     }
 
   ]

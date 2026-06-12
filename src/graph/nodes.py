@@ -543,6 +543,24 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
             best_rows: list = []
             best_table: Optional[str] = source
             best_is_and = False
+            best_priority = 0  # tie-break déterministe : DIRECTION > DEPARTEMENT > SERVICE
+
+            # Ordre de priorité des tables pour les questions hiérarchiques
+            _TABLE_PRIORITY = {"DIRECTION": 3, "DEPARTEMENT": 2, "SERVICE": 1}
+
+            # Détecte si la question porte sur un niveau hiérarchique précis
+            _q_fold = _fold(resolved_question)
+            _q_is_direction = bool(re.search(
+                r"\b(directeur|directrice|direction|responsable\s+\w+\s+des\s+syst|"
+                r"responsable\s+s[eé]curit[eé])\b", _q_fold
+            ))
+            _q_is_dept = bool(re.search(
+                r"\b(departement|chef\s+du\s+dep|chef\s+de\s+dep)\b", _q_fold
+            ))
+            _q_is_service = bool(re.search(
+                r"\b(service|chef\s+du\s+serv|chef\s+de\s+serv)\b", _q_fold
+            ))
+
             for table_name in structured.tables:
                 if table_name == source:
                     continue
@@ -550,15 +568,37 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
                 if not t_rows:
                     continue
                 t_is_and = any(r["metadata"].get("and_match", False) for r in t_rows)
-                if (t_is_and and not best_is_and) or \
-                   (t_is_and == best_is_and and len(t_rows) > len(best_rows)):
-                    best_rows  = t_rows
-                    best_table = table_name
-                    best_is_and = t_is_and
+                t_priority = _TABLE_PRIORITY.get(table_name.upper(), 0)
+
+                # Bonus de priorité si la table correspond exactement au niveau demandé
+                if _q_is_direction and table_name.upper() == "DIRECTION":
+                    t_priority += 10
+                elif _q_is_dept and table_name.upper() == "DEPARTEMENT":
+                    t_priority += 10
+                elif _q_is_service and table_name.upper() == "SERVICE":
+                    t_priority += 10
+
+                # Règle de sélection : AND > OR, puis priorité table, puis volume
+                better = False
+                if t_is_and and not best_is_and:
+                    better = True
+                elif t_is_and == best_is_and:
+                    if t_priority > best_priority:
+                        better = True
+                    elif t_priority == best_priority and len(t_rows) > len(best_rows):
+                        better = True
+
+                if better:
+                    best_rows     = t_rows
+                    best_table    = table_name
+                    best_is_and   = t_is_and
+                    best_priority = t_priority
+
             if best_rows:
                 rows   = best_rows
                 source = best_table
-                logger.info("  [direct] Fallback multi-tables → %s (and=%s)", source, best_is_and)
+                logger.info("  [direct] Fallback multi-tables → %s (and=%s, priority=%d)",
+                            source, best_is_and, best_priority)
 
         # Aucun résultat DuckDB → RAG + LLM
         if not rows:
@@ -571,7 +611,14 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
                 "path_taken":         "structured_qa_direct",
             }
 
-        # Validation du rôle
+        # ── Validation du rôle : recouvrement de tokens (souple) ────────────
+        # On ne rejette la ligne que si MOINS de 35 % des tokens significatifs
+        # de la question se retrouvent dans la valeur de la colonne rôle.
+        # Cela évite de rejeter "directeur central logistique" pour la question
+        # "qui dirige la Direction Centrale Logistique" (fix S017).
+        # Le seuil bas (0.35) est intentionnel : il élimine les vrais faux positifs
+        # (ex: "ingenieur en chef HSE" pour "Chef du Département HSE") tout en
+        # acceptant les variantes lexicales (directeur vs dirige, centrale vs central).
         if source and structured.has_table(source):
             role_col_chk = structured.get_role_column(source)
             if role_col_chk:
@@ -582,18 +629,34 @@ def build_nodes(components: Dict[str, Any]) -> Dict[str, Any]:
                     "qui", "est", "sont", "quel", "quelle",
                     "le", "la", "les", "de", "du", "des", "un", "une",
                     "dans", "par", "pour", "sur", "avec",
+                    "dirige", "responsable",
                 }
                 q_role_tokens = [
                     t for t in re.split(r"[\s\-_/,;:!?.]+", q_folded)
                     if len(t) >= 4 and t not in _ROLE_STOP
                 ]
+                role_tokens = set(re.split(r"[\s\-_/,;:!?.]+", role_found))
+
                 if q_role_tokens and role_found:
-                    missing   = [t for t in q_role_tokens if t not in role_found]
-                    miss_ratio = len(missing) / len(q_role_tokens)
-                    if miss_ratio > 0.6:
+                    # Recouvrement : token question préfixe/contenu dans rôle ou vice-versa
+                    def _tok_match(qt: str, role_toks: set) -> bool:
+                        for rt in role_toks:
+                            if len(rt) < 3:
+                                continue
+                            if qt.startswith(rt) or rt.startswith(qt):
+                                return True
+                            # Tolérance 1 char (pluriel, féminin)
+                            if qt[:-1] == rt[:-1] and len(qt) >= 5:
+                                return True
+                        return False
+
+                    matched = sum(1 for t in q_role_tokens if _tok_match(t, role_tokens))
+                    match_ratio = matched / len(q_role_tokens)
+
+                    if match_ratio < 0.35:
                         logger.info(
-                            "  [direct] Rôle '%s' ≠ question → fallback RAG+LLM",
-                            role_found[:60],
+                            "  [direct] Rôle '%s' ≠ question (match=%.0f%%) → fallback RAG+LLM",
+                            role_found[:60], match_ratio * 100,
                         )
                         return {
                             "needs_rag_fallback": True,

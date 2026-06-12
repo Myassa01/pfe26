@@ -43,11 +43,13 @@ def reciprocal_rank_fusion(
         if doc_id not in doc_map:
             doc_map[doc_id] = doc
 
-    # Trier les scores
+    # Trier les scores — tie-break déterministe sur l'ID du document :
+    # à score RRF identique, deux runs identiques retournent toujours le même
+    # ordre, ce qui évite les fluctuations de M016 et autres questions
+    # sensibles au chunk qui passe en premier au reranker.
     sorted_ids = sorted(
         rrf_scores,
-        key=lambda x: rrf_scores[x],
-        reverse=True
+        key=lambda x: (-rrf_scores[x], x),  # score DESC, doc_id ASC (stable)
     )
 
     results = []
