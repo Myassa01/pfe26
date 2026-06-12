@@ -834,13 +834,11 @@ class StructuredQueryEngine:
             rows = []
 
         # ── Phase 1b : tri par précision sur la colonne rôle ─────────────────
-        # On calcule deux sous-scores :
-        #   1. prefix_bonus : +2 si la valeur du rôle COMMENCE par les tokens
-        #      de la question (ex: FONCTION="CHEF DE DEPARTEMENT..." pour
-        #      "Chef du Département HSE"). Évite que "ingenieur en CHEF" batte
-        #      "CHEF DE DEPARTEMENT" alors que la question demande un "chef de département".
-        #   2. matched - extra*0.5 : score standard token overlap.
-        # Le sous-score 1 prime (poids x3) pour lever les ambiguïtés de titres.
+        # Scoring sur la colonne rôle seule (et non l'ensemble des user_cols) évite
+        # que des tables hiérarchiques (DEPARTEMENT, SERVICE…) pénalisent les lignes
+        # courtes : une ligne ATTALAH peut avoir plusieurs colonnes "maintenance"
+        # (DEPARTEMENT MAINTENANCE, DIRECTION MAINTENANCE…) qui gonfleraient
+        # artificiellement les extra_tokens et feraient gagner MAINTENANCE INDUSTRIELLE.
         if _and_matched and len(rows) > 1:
             q_token_set   = set(tokens)
             role_col_sort = self.get_role_column(table)  # None si non détecté
@@ -848,6 +846,8 @@ class StructuredQueryEngine:
             def _precision(row):
                 rv = {c: str(v).strip() if v is not None else ""
                       for c, v in zip(all_cols, row)}
+                # Utilise la colonne rôle si disponible — plus discriminante
+                # que la concaténation de toutes les colonnes visibles.
                 if role_col_sort and rv.get(role_col_sort):
                     score_text = self._fold(rv[role_col_sort])
                 else:
@@ -860,29 +860,7 @@ class StructuredQueryEngine:
                 }
                 matched = len(row_toks & q_token_set)
                 extra   = len(row_toks - q_token_set)
-                base    = matched - extra * 0.5
-
-                # Bonus de préfixe : la FONCTION commence-t-elle par les premiers
-                # tokens de la question (dans le même ordre) ?
-                # Ex: q_tokens=["chef","departement","hse"] et
-                #     role="chef de departement hse" → préfixe OK → bonus +3
-                prefix_bonus = 0.0
-                if role_col_sort and rv.get(role_col_sort):
-                    role_f = self._fold(rv[role_col_sort])
-                    role_start_toks = [
-                        t for t in re.split(r"[\s\-_/,;:!?.]+", role_f)
-                        if len(t) >= 3
-                    ]
-                    # Compte combien de tokens question matchent en début de rôle
-                    common_prefix = 0
-                    for qt in q_token_set:
-                        if role_start_toks and role_start_toks[0].startswith(qt):
-                            common_prefix += 1
-                        elif len(role_start_toks) > 1 and role_start_toks[1].startswith(qt):
-                            common_prefix += 0.5
-                    prefix_bonus = common_prefix * 3.0
-
-                return base + prefix_bonus
+                return matched - extra * 0.5
 
             rows = sorted(rows, key=_precision, reverse=True)[:max_results]
 
