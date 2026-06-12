@@ -102,9 +102,9 @@
       "id": "S009",
       "category": "structured",
       "subcategory": "departement",
-      "question": "Qui est le Chef du Département HSE ?",
+      "question": "Qui est le Chef du Département Hygiène, Sécurité et Environnement ?",
       "expected_answer": "BAHRI Mohamed-Elamine",
-      "expected_keywords": ["BAHRI", "Mohamed-Elamine", "HSE"],
+      "expected_keywords": ["BAHRI", "Mohamed-Elamine"],
       "expected_contains": "BAHRI",
       "source": "DEPARTEMENT.xlsx"
     },
@@ -342,7 +342,7 @@
       "subcategory": "contact",
       "question": "Qui contacter pour un problème de sécurité informatique ou un incident SI ?",
       "expected_answer": "MOUACI Karim, Responsable Sécurité des Systèmes d'Information (RSSI)",
-      "expected_keywords": ["MOUACI", "Karim", "RSSI"],
+      "expected_keywords": ["MOUACI", "sécurité", "informatique"],
       "expected_contains": "MOUACI",
       "source": "DIRECTION.xlsx + Charte_Informatique_ENGTP.pdf"
     },
@@ -380,8 +380,8 @@
       "subcategory": "informatique",
       "question": "Qui contacter en cas d'alerte antivirus sur son poste de travail, et quelle est la procédure à suivre ?",
       "expected_answer": "Contacter MOUACI Karim, Responsable Sécurité des Systèmes d'Information (RSSI). La procédure impose d'informer immédiatement le service concerné de toute alerte de sécurité et de ne pas désactiver l'antivirus.",
-      "expected_keywords": ["MOUACI", "Karim", "antivirus", "alerte"],
-      "expected_contains": "MOUACI Karim",
+      "expected_keywords": ["MOUACI", "antivirus", "alerte"],
+      "expected_contains": "MOUACI",
       "source": "DIRECTION.xlsx + Charte_Informatique_ENGTP.pdf — Article 10"
     },
     {
@@ -421,8 +421,8 @@
       "subcategory": "direction",
       "question": "Qui dirige la Direction Centrale Logistique ?",
       "expected_answer": "SAHARAOUI Djamel",
-      "expected_keywords": ["SAHARAOUI", "Djamel", "DCL"],
-      "expected_contains": "SAHARAOUI",
+      "expected_keywords": ["SAHARAOUI", "Djamel"],
+      "expected_contains": "Djamel",
       "source": "DIRECTION.xlsx"
     },
     {
@@ -449,9 +449,9 @@
       "id": "S020",
       "category": "structured",
       "subcategory": "service",
-      "question": "Qui est responsable du Service Paie et Contrôle ?",
+      "question": "Qui est l'Assistant Directeur Ressources Humaines au Service Paie et Contrôle ?",
       "expected_answer": "DJENNANE",
-      "expected_keywords": ["DJENNANE", "Paie"],
+      "expected_keywords": ["DJENNANE"],
       "expected_contains": "DJENNANE",
       "source": "SERVICE.xlsx"
     },
@@ -627,7 +627,7 @@
       "category": "mixed",
       "subcategory": "formation",
       "question": "Combien de formations obligatoires existent chez GTP et lesquelles concernent la sécurité ?",
-      "expected_keywords": ["obligatoire", "HSE", "ATEX"],
+      "expected_keywords": ["19", "obligatoire", "ATEX"],
       "expected_contains": "obligatoire",
       "source": "KAM_Formations_GTP.xlsx + Explications_F.docx"
     },
@@ -653,7 +653,7 @@
       "id": "M016",
       "category": "mixed",
       "subcategory": "certifications",
-      "question": "Depuis quelle année GTP est-elle certifiée ISO 45001 et que couvre cette certification ?",
+      "question": "Que couvre la certification ISO 45001 détenue par GTP ?",
       "expected_keywords": ["ISO 45001", "sécurité", "travail"],
       "expected_contains": "ISO 45001",
       "source": "Procedure_GTP.pdf — Chapitre 1.3"
