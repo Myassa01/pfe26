@@ -1,11 +1,11 @@
 {
-  "_comment": "Dataset de test — 70 questions (23 structurées / 28 RAG / 17 mixtes) — v6.3 mots-clés simplifiés en tokens courts",
+  "_comment": "Dataset de test — 68 questions (23 structurées / 28 RAG / 17 mixtes) — v6.3 mots-clés simplifiés en tokens courts",
   "metadata": {
-    "version": "6.0",
+    "version": "6.3",
     "entreprise": "ENGTP — Entreprise Nationale de Grands Travaux Pétroliers",
-    "description": "v6 — 30 questions supplémentaires ajoutées (S016-S023, R016-R028, M011-M017)",
+    "description": "v6.3 — 30 questions supplémentaires ajoutées (S016-S023, R016-R028, M011-M017), mots-clés simplifiés, S023 corrigé",
     "categories": ["structured", "rag", "mixed"],
-    "total": 70,
+    "total": 68,
     "sources": [
       "SERVICE.xlsx",
       "DIRECTION.xlsx",

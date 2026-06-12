@@ -39,14 +39,16 @@ SENSITIVE_CATEGORIES = {
         r"\briberib\b|\brib\b",
     ],
     "salaire": [
-        r"salair",            # salaire, salaires, salarial
-        r"r[ée]mun[ée]ra",    # rémunération, rémunérer
-        r"\bpaie\b|\bpaye\b",
+        r"\bmon\s+salair",                        # mon salaire
+        r"\bson\s+salair",                        # son salaire
+        r"\bsalair\w*\s+de\s+(?:m\.|mr?\.?\s)?\w+",  # salaire de M. X
+        r"\bma\s+r[ée]mun[ée]ra",                # ma rémunération
+        r"\bsa\s+r[ée]mun[ée]ra",                # sa rémunération
         r"bulletin\s+de\s+(?:paie|salaire)",
         r"fiche\s+de\s+paie",
         r"\bgaranti\s+mensuel",
         r"\bnet\s+[àa]\s+payer\b",
-        r"\bsalaire\s+(?:net|brut|de\s+base)\b",
+        r"\bsalaire\s+(?:net|brut)\b",           # salaire net/brut (personnel)
     ],
 }
 
