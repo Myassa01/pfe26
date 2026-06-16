@@ -104,7 +104,7 @@ def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
 
 
 # ─────────────────────────────────────────────────────────────
-# Prompt analyse — version compacte orientée recruteur
+# Prompt analyse — format strict imposé
 # ─────────────────────────────────────────────────────────────
 
 ANALYSIS_PROMPT = """
@@ -146,7 +146,7 @@ RÈGLES RH STRICTES
 2. Ne jamais inventer de compétences.
 3. Ne jamais supposer une expérience.
 4. Les langues, soft skills et qualités générales ne compensent PAS
-   l’absence de compétences techniques du poste.
+   l'absence de compétences techniques du poste.
 5. Si le domaine principal du CV est incompatible avec le poste :
    → SCORE MAXIMUM = 2/10
 6. Si le CV est totalement hors domaine :
@@ -164,7 +164,7 @@ RÈGLES RH STRICTES
 DÉTECTION DU DOMAINE (TRÈS IMPORTANT)
 ════════════════════════════════════════
 
-Identifier d’abord le domaine principal du candidat.
+Identifier d'abord le domaine principal du candidat.
 
 Exemples de domaines :
 - Informatique / Développement
@@ -205,43 +205,27 @@ BARÈME OBLIGATOIRE
 ════════════════════════════════════════
 
 1. Compatibilité domaine (0 à 3 points)
-
 3 = domaine parfaitement adapté
 2 = domaine proche
 1 = domaine partiellement lié
 0 = domaine incompatible
 
-----------------------------------------
-
 2. Diplôme / Formation (0 à 2 points)
-
 2 = diplôme directement lié au poste
 1 = formation partiellement liée
 0 = aucun diplôme pertinent
 
-----------------------------------------
-
 3. Compétences techniques (0 à 2 points)
-
-Comparer les compétences du CV
-avec les exigences du poste.
-
 2 = compétences solides et pertinentes
 1 = compétences partielles
 0 = compétences absentes
 
-----------------------------------------
-
 4. Expérience professionnelle (0 à 2 points)
-
 2 = expérience forte et pertinente
 1 = expérience limitée
 0 = aucune expérience pertinente
 
-----------------------------------------
-
 5. Bonus secteur Oil & Gas (0 à 1 point)
-
 1 = expérience pétrole/gaz/Sonatrach
 0 = aucune
 
@@ -249,103 +233,66 @@ avec les exigences du poste.
 INTERPRÉTATION DU SCORE
 ════════════════════════════════════════
 
-0-2 :
-Profil incompatible ou hors domaine
-
-3-4 :
-Faible adéquation
-
-5-6 :
-Adéquation moyenne
-
-7-8 :
-Bonne adéquation
-
-9-10 :
-Excellente adéquation
+0-2 : Profil incompatible ou hors domaine
+3-4 : Faible adéquation
+5-6 : Adéquation moyenne
+7-8 : Bonne adéquation
+9-10 : Excellente adéquation
 
 ════════════════════════════════════════
 RÈGLES POUR LE POSTE RECOMMANDÉ
 ════════════════════════════════════════
 
-Le POSTE RECOMMANDÉ doit être basé UNIQUEMENT
-sur le domaine réel du CV.
-
+Le POSTE RECOMMANDÉ doit être basé UNIQUEMENT sur le domaine réel du CV.
 NE JAMAIS recopier automatiquement le poste demandé.
+Un seul titre de poste, jamais une liste.
 
-Si le candidat est incompatible avec le poste cible :
-- proposer un poste cohérent avec son vrai domaine
-- OU écrire "Aucun poste informatique recommandé"
-
-Exemples obligatoires :
-
-CV comptabilité
-→ "Comptable"
-→ jamais "Développeur informatique"
-
-CV soudage
-→ "Soudeur industriel"
-→ jamais "Ingénieur développement informatique"
-
-CV lettres / langues
-→ "Assistant administratif"
-→ jamais "Développeur"
-
-CV HSE
-→ "Ingénieur HSE"
-
-CV juridique
-→ "Juriste"
-
-Si aucun poste Sonatrach pertinent :
-→ écrire "Non pertinent pour les postes informatiques"
-
-Le POSTE RECOMMANDÉ doit refléter
-le VRAI métier du candidat.
-
-⚠️ IMPORTANT : proposer UN SEUL poste recommandé,
-jamais une liste. Une ligne, un titre de poste.
 ════════════════════════════════════════
-FORMAT DE RÉPONSE OBLIGATOIRE
+⚠️ FORMAT DE RÉPONSE — STRICT ET OBLIGATOIRE
 ════════════════════════════════════════
+
+INTERDICTIONS ABSOLUES :
+- PAS de tableaux markdown (| col | col |)
+- PAS de listes numérotées
+- PAS de texte de justification en dehors des sections
+- PAS de phrases de remplissage
+- PAS d'introduction ni de conclusion
+
+UTILISE UNIQUEMENT ce format, avec exactement ces titres en gras :
 
 **SCORE** : X/10
 **DOMAINE** : Compatible / Partiellement compatible / Incompatible
 **DÉCISION** : Recommandé / À étudier / Non recommandé
 
 **ATOUTS**
-- point 1
-- point 2
-- point 3
+- [point concis, 1 ligne max]
+- [point concis, 1 ligne max]
+- [point concis, 1 ligne max]
 
 **LACUNES**
-- point 1
-- point 2
-- point 3
+- [point concis, 1 ligne max]
+- [point concis, 1 ligne max]
+- [point concis, 1 ligne max]
 
-**POSTE RECOMMANDÉ** :
-- poste réellement compatible avec le CV
-- OU "Non pertinent pour ce poste"
-- un seul titre de poste ici, pas de liste
+**POSTE RECOMMANDÉ** : [un seul titre de poste]
 
-**ANNÉES_EXPÉRIENCE** : entier ou -1
-**ANNÉE_DIPLOME** : année ou 0
+**ANNÉES_EXPÉRIENCE** : [entier, ex: 7, ou -1 si inconnu]
+**ANNÉE_DIPLOME** : [année ex: 2013, ou 0 si inconnue]
 
 ════════════════════════════════════════
 IMPORTANT
 ════════════════════════════════════════
 
-Ne jamais être “gentil”.
+Ne jamais être "gentil".
 Être STRICT comme un vrai recruteur Sonatrach.
-
-Un candidat hors domaine ne doit JAMAIS recevoir
-un score moyen ou élevé.
+Un candidat hors domaine ne doit JAMAIS recevoir un score moyen ou élevé.
 """
 
 
 def build_analysis_prompt(cv_text: str, poste: str, job_context: str) -> str:
+    poste_label = poste or "Non précisé — analyser le domaine du CV et recommander le poste adapté"
     return ANALYSIS_PROMPT.format(
-        poste=poste or "poste généraliste Sonatrach",
+        poste=poste_label,
         job_context=job_context or (
             "Aucun document spécifique trouvé dans la base. "
             "Appliquer les critères RH généraux Sonatrach pour ce type de poste."
@@ -375,9 +322,11 @@ def analyze_cv_with_pipeline(
 
     search_poste = poste.strip() if poste else ""
 
+    # ── Requête RAG : si pas de poste, chercher sur le contenu du CV ──────────
     if search_poste:
         search_query = f"exigences compétences diplômes requis poste {search_poste}"
     else:
+        # Extraire les mots-clés du CV pour chercher un poste pertinent
         cv_hint = " ".join(cv_text[:600].split())[:300]
         search_query = f"poste Sonatrach requis diplôme expérience {cv_hint}"
 
@@ -445,10 +394,12 @@ def analyze_cv_with_pipeline(
         answer = pipeline.llm.generate(
             prompt=prompt,
             system=(
-                "Tu es un expert RH chez Sonatrach. Réponds uniquement en français. "
-                "Sois CONCIS et DIRECT : le recruteur doit pouvoir lire la fiche en 20 secondes. "
-                "Utilise UNIQUEMENT le format demandé avec des tirets. "
-                "Aucune phrase de remplissage, aucun développement inutile. "
+                "Tu es un expert RH chez Sonatrach. Réponds UNIQUEMENT en français. "
+                "RESPECT ABSOLU DU FORMAT : utilise exactement **SCORE**, **DOMAINE**, "
+                "**DÉCISION**, **ATOUTS**, **LACUNES**, **POSTE RECOMMANDÉ**, "
+                "**ANNÉES_EXPÉRIENCE**, **ANNÉE_DIPLOME**. "
+                "INTERDIT : tableaux markdown, listes numérotées, justifications longues. "
+                "OBLIGATOIRE : tirets simples sous ATOUTS et LACUNES. "
                 "Base-toi UNIQUEMENT sur le contenu explicite du CV, sans invention."
             ),
             temperature=0.0,
@@ -471,10 +422,13 @@ def analyze_cv_with_pipeline(
 
     elapsed = round(time.time() - t0, 2)
 
+    # ── Poste affiché : si non précisé, utiliser le poste recommandé ──────────
+    displayed_poste = search_poste or recommended_poste or "Non précisé"
+
     return {
         "answer":            answer,
         "score":             score,
-        "poste":             search_poste or recommended_poste or "Non précisé",
+        "poste":             displayed_poste,
         "recommended_poste": recommended_poste or "Non précisé",
         "sources":           sources,
         "elapsed_seconds":   elapsed,
@@ -551,7 +505,7 @@ def _extract_recommended_poste(text: str) -> Optional[str]:
     import re
     patterns = [
         r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*[:\-]\s*([^\n\[\]]+)",
-        r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*\n+\s*([^\n\[\]\*]+)",
+        r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*\n+\s*([^\n\[\]\*-][^\n\[\]\*]{3,})",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
