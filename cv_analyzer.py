@@ -147,18 +147,23 @@ RÈGLES RH STRICTES
 3. Ne jamais supposer une expérience.
 4. Les langues, soft skills et qualités générales ne compensent PAS
    l’absence de compétences techniques du poste.
-5. Si le domaine principal du CV est incompatible avec le poste :
+5. Le POSTE CIBLE est défini par le titre saisi ci-dessus.
+   Les EXIGENCES DU POSTE sont un contexte secondaire.
+   Si les exigences semblent hors sujet, ignorer et se baser uniquement sur le POSTE CIBLE.
+6. Si le domaine principal du CV est incompatible avec le POSTE CIBLE :
    → SCORE MAXIMUM = 2/10
-6. Si le CV est totalement hors domaine :
+7. Si le CV est totalement hors domaine :
    → SCORE = 0/10
    → DÉCISION = Non recommandé
-7. Un diplôme seul sans expérience pertinente :
+8. Un diplôme seul sans expérience pertinente :
    → score maximum = 6/10
-8. Une expérience réelle directement liée au poste est obligatoire
-   pour obtenir un score élevé.
-9. Les stages comptent faiblement comme expérience.
-10. Expérience Oil & Gas / Sonatrach :
-   → bonus +1
+9. Une expérience réelle directement liée au poste est obligatoire
+   pour obtenir un score élevé (7/10 ou plus).
+10. Les stages dans le domaine exact du poste comptent comme expérience partielle (pas nulle).
+    Un profil junior avec stage pertinent + diplôme pertinent peut atteindre 5 à 6/10.
+    NE PAS donner 2/10 à un profil junior dont le domaine est compatible avec le POSTE CIBLE.
+11. Expérience Oil & Gas / Sonatrach :
+    → bonus +1
 
 ════════════════════════════════════════
 DÉTECTION DU DOMAINE (TRÈS IMPORTANT)
@@ -268,14 +273,14 @@ Excellente adéquation
 RÈGLES POUR LE POSTE RECOMMANDÉ
 ════════════════════════════════════════
 
-Le POSTE RECOMMANDÉ doit être basé UNIQUEMENT
-sur le domaine réel du CV.
+Le POSTE RECOMMANDÉ doit refléter le vrai métier du candidat.
 
-NE JAMAIS recopier automatiquement le poste demandé.
+Si le candidat est COMPATIBLE avec le poste cible :
+→ écrire le POSTE CIBLE (ou un titre similaire)
 
-Si le candidat est incompatible avec le poste cible :
+Si le candidat est INCOMPATIBLE avec le poste cible :
 - proposer un poste cohérent avec son vrai domaine
-- OU écrire "Aucun poste informatique recommandé"
+- OU écrire "Non pertinent pour ce poste"
 
 Exemples obligatoires :
 
@@ -375,61 +380,62 @@ def analyze_cv_with_pipeline(
     if search_poste:
         search_query = f"exigences compétences diplômes requis poste {search_poste}"
     else:
-        cv_hint = " ".join(cv_text[:600].split())[:300]
-        search_query = f"poste Sonatrach requis diplôme expérience {cv_hint}"
+        search_query = None  # pas de poste → pas de recherche RAG
 
     # ── Recherche RAG ──────────────────────────────────────────
-    try:
-        query_embedding = pipeline.embedder.embed_single(search_query)
+    job_context = ""
+    sources = []
 
-        dense_results = pipeline.vector_store.search(
-            query_embedding,
-            k=pipeline.config.top_k_dense,
-        )
+    if search_query:
+        try:
+            query_embedding = pipeline.embedder.embed_single(search_query)
 
-        sparse_results = []
-        if pipeline.bm25:
-            sparse_results = pipeline.bm25.search(
-                search_query,
-                k=pipeline.config.top_k_sparse,
+            dense_results = pipeline.vector_store.search(
+                query_embedding,
+                k=pipeline.config.top_k_dense,
             )
 
-        from src.retrieval.hybrid_search import reciprocal_rank_fusion
-        fused = reciprocal_rank_fusion(
-            dense_results,
-            sparse_results,
-            k=pipeline.config.rrf_k,
-        )
+            sparse_results = []
+            if pipeline.bm25:
+                sparse_results = pipeline.bm25.search(
+                    search_query,
+                    k=pipeline.config.top_k_sparse,
+                )
 
-        top_chunks = fused[:pipeline.config.top_k_after_rerank]
-
-        if pipeline.reranker and top_chunks:
-            pairs = [(search_query, c["content"]) for c in top_chunks]
-            scores = pipeline.reranker.model.predict(pairs)
-
-            for c, s in zip(top_chunks, scores):
-                c["rerank_score"] = float(s)
-
-            top_chunks = sorted(
-                top_chunks,
-                key=lambda x: x.get("rerank_score", 0),
-                reverse=True,
+            from src.retrieval.hybrid_search import reciprocal_rank_fusion
+            fused = reciprocal_rank_fusion(
+                dense_results,
+                sparse_results,
+                k=pipeline.config.rrf_k,
             )
 
-        job_context = "\n\n---\n\n".join(
-            f"[{c['metadata'].get('source', '?')}]\n{c['content']}"
-            for c in top_chunks
-        )
+            top_chunks = fused[:pipeline.config.top_k_after_rerank]
 
-        sources = list({
-            c["metadata"].get("source", "?")
-            for c in top_chunks
-        })
+            if pipeline.reranker and top_chunks:
+                pairs = [(search_query, c["content"]) for c in top_chunks]
+                scores = pipeline.reranker.model.predict(pairs)
 
-    except Exception as e:
-        logger.warning("Erreur recherche RAG : %s", e)
-        job_context = ""
-        sources = []
+                for c, s in zip(top_chunks, scores):
+                    c["rerank_score"] = float(s)
+
+                top_chunks = sorted(
+                    top_chunks,
+                    key=lambda x: x.get("rerank_score", 0),
+                    reverse=True,
+                )
+
+            job_context = "\n\n---\n\n".join(
+                f"[{c['metadata'].get('source', '?')}]\n{c['content']}"
+                for c in top_chunks
+            )
+
+            sources = list({
+                c["metadata"].get("source", "?")
+                for c in top_chunks
+            })
+
+        except Exception as e:
+            logger.warning("Erreur recherche RAG : %s", e)
 
     # ── Appel LLM ─────────────────────────────────────────────
     prompt = build_analysis_prompt(
@@ -446,7 +452,10 @@ def analyze_cv_with_pipeline(
                 "Sois CONCIS et DIRECT : le recruteur doit pouvoir lire la fiche en 20 secondes. "
                 "Utilise UNIQUEMENT le format demandé avec des tirets. "
                 "Aucune phrase de remplissage, aucun développement inutile. "
-                "Base-toi UNIQUEMENT sur le contenu explicite du CV, sans invention."
+                "Base-toi UNIQUEMENT sur le contenu explicite du CV, sans invention. "
+                "IMPORTANT : le POSTE CIBLE indiqué dans le prompt est la référence principale. "
+                "Si les exigences du poste mentionnent d'autres intitulés, ignore-les et évalue "
+                "le CV par rapport au POSTE CIBLE uniquement."
             ),
             temperature=0.0,
             max_tokens=pipeline.config.llm_max_tokens_long,
