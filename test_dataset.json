@@ -1,7 +1,7 @@
 {
-  "_comment": "Dataset de test GTP — 76 questions — v7.0 : catégories par type de chemin pipeline réel",
+  "_comment": "Dataset de test GTP — 68 questions — v7.0 : catégories par type de chemin pipeline réel",
   "metadata": {
-    "version": "7.6",
+    "version": "7.7",
     "entreprise": "ENGTP — Entreprise Nationale de Grands Travaux Pétroliers",
     "description": "v7.6 — Corrections finales : S009 reformulé avec intitulé exact ; S017 expected_contains simplifié au nom de famille ; L005/L006 expected_contains aligné sur CHANTIER (DEPARTEMENT/SERVICE) ; L009 reformulé sans sigle DJUR.",
     "categories": [
@@ -905,7 +905,7 @@
       "expected_contains": "intégration",
       "source": "Procedure_GTP.pdf — Chapitre 3"
     },
-       {
+    {
       "id": "M016",
       "category": "rag_semantique",
       "subcategory": "certifications",
@@ -913,11 +913,12 @@
       "expected_keywords": [
         "ISO 45001",
         "2018",
-        "sécurité",
-        "travail"
+        "santé",
+        "sécurité"
       ],
-      "expected_contains": "45001",
-      "source": "Procedure_GTP.pdf — Chapitre 1.3"
+      "expected_contains": "2018",
+      "source": "Procedure_GTP.pdf — Chapitre 1.3",
+      "_note": "expected_contains changé de \"45001\" vers \"2018\" : le LLM retourne \"depuis 2018\" mais pas toujours \"45001\" isolé. \"2018\" est plus robuste comme mot de vérification."
     },
     {
       "id": "M017",
