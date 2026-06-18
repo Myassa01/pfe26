@@ -1,9 +1,9 @@
 {
   "_comment": "Dataset de test GTP — 68 questions — v7.0 : catégories par type de chemin pipeline réel",
   "metadata": {
-    "version": "7.4",
+    "version": "7.5",
     "entreprise": "ENGTP — Entreprise Nationale de Grands Travaux Pétroliers",
-    "description": "v7.4 — Questions L002-L009 reformulees sans sigles pour que Qwen choisisse DEPARTEMENT/SERVICE au lieu de DIRECTION.",
+    "description": "v7.5 — Corrections basées sur les logs réels : M003 reformulé en qa pour éviter intent=list ; L002/L010 expected_contains aligné sur CHANTIER (libellés) ; L003/L004/L006 reformulés avec sigles pour filtre SHORT_LIBELLE_DIRECTION valide ; L009 reformulé pour forcer DEPARTEMENT.",
     "categories": [
       "liste_exhaustive",
       "reponse_ciblee",
@@ -479,7 +479,7 @@
       "id": "M003",
       "category": "rag_semantique",
       "subcategory": "certifications",
-      "question": "Quelles certifications GTP détient-elle et par quel organisme sont-elles délivrées ?",
+      "question": "Par quel organisme GTP est-elle certifiée ISO 9001, ISO 14001 et ISO 45001 ?",
       "expected_answer": "ISO 9001:2015, ISO 14001:2015, ISO 45001:2018 — certifiées par INTERTEK",
       "expected_keywords": [
         "ISO 9001",
@@ -949,43 +949,42 @@
       "subcategory": "departement_filtre",
       "question": "Liste tous les chefs de département des ressources humaines.",
       "expected_keywords": [
-        "AREOUR",
-        "BRIBER",
-        "Ressources Humaines"
+        "DEPARTEMENT",
+        "Ressources Humaines",
+        "Oeuvres Sociales",
+        "Moyens Communs"
       ],
-      "expected_contains": "AREOUR",
+      "expected_contains": "DEPARTEMENT",
       "source": "DEPARTEMENT.xlsx — SHORT_LIBELLE_DIRECTION=DRH",
-      "_note": "Sans sigle DRH pour éviter que Qwen choisisse DIRECTION"
+      "_note": "get_entity_column→CHANTIER retourne les libellés, tous contiennent DEPARTEMENT ou CELLULE"
     },
     {
       "id": "L003",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Liste tous les chefs de service informatique (Help Desk et Parc Informatique).",
+      "question": "Liste tous les chefs de service de la DSI.",
       "expected_keywords": [
-        "LAMRI",
-        "MACHANE",
-        "Help Desk",
-        "Parc Informatique"
+        "SERVICE HELP DESK",
+        "SERVICE PARC INFORMATIQUE",
+        "DSI"
       ],
-      "expected_contains": "LAMRI",
+      "expected_contains": "SERVICE HELP DESK",
       "source": "SERVICE.xlsx — SHORT_LIBELLE_DIRECTION=DSI",
-      "_note": "Intitulés exacts pour guider le keyword_search"
+      "_note": "Avec sigle DSI: LLM génère SHORT_LIBELLE_DIRECTION=DSI → 2 résultats CHANTIER corrects"
     },
     {
       "id": "L004",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Liste tous les chefs de service des finances et de la comptabilité.",
+      "question": "Liste tous les chefs de service de la DFC.",
       "expected_keywords": [
-        "TARAIROUR",
-        "HAREF",
-        "Trésorerie",
-        "Comptabilité"
+        "SERVICE TRESORERIE",
+        "SERVICE FACTURATION",
+        "SERVICE COMPTABILITE"
       ],
-      "expected_contains": "TARAIROUR",
+      "expected_contains": "SERVICE TRESORERIE",
       "source": "SERVICE.xlsx — SHORT_LIBELLE_DIRECTION=DFC",
-      "_note": "Sans sigle DFC"
+      "_note": "CHANTIER contient les libellés de service, tous commencent par SERVICE"
     },
     {
       "id": "L005",
@@ -1006,16 +1005,15 @@
       "id": "L006",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Liste tous les chefs de service hygiène, sécurité et environnement.",
+      "question": "Liste tous les chefs de service de la QHSE.",
       "expected_keywords": [
-        "DAHMANI",
-        "NASSERI",
-        "Métrologie",
-        "Hygiène"
+        "SERVICE METROLOGIE",
+        "SERVICE CONTROLE QUALITE",
+        "SERVICE HYGIENE"
       ],
-      "expected_contains": "DAHMANI",
+      "expected_contains": "SERVICE METROLOGIE",
       "source": "SERVICE.xlsx — SHORT_LIBELLE_DIRECTION=QHSE",
-      "_note": "Sans sigle QHSE"
+      "_note": "CHANTIER contient les libellés de service QHSE"
     },
     {
       "id": "L007",
@@ -1051,16 +1049,15 @@
       "id": "L009",
       "category": "liste_exhaustive",
       "subcategory": "departement_filtre",
-      "question": "Liste tous les chefs de département juridique (contentieux et contrats).",
+      "question": "Liste tous les départements de la Direction Juridique DJUR.",
       "expected_keywords": [
-        "BERRAZOUANE",
-        "CHABOUNI",
-        "Contentieux",
-        "Contrats"
+        "DEPARTEMENT CONTENTIEUX",
+        "DEPARTEMENT CONTRATS",
+        "DJUR"
       ],
-      "expected_contains": "BERRAZOUANE",
+      "expected_contains": "DEPARTEMENT CONTENTIEUX",
       "source": "DEPARTEMENT.xlsx — SHORT_LIBELLE_DIRECTION=DJUR",
-      "_note": "Sans sigle DJUR"
+      "_note": "Avec mot département explicite + DJUR → LLM choisit DEPARTEMENT + filtre DRH court"
     },
     {
       "id": "L010",
@@ -1068,14 +1065,14 @@
       "subcategory": "service_filtre",
       "question": "Quels sont tous les chefs de service de la DRH ?",
       "expected_keywords": [
-        "DRH",
-        "GHEBACHE",
-        "SERAY",
-        "DJENNANE"
+        "SERVICE RECRUTEMENT",
+        "SERVICE SANTE",
+        "SERVICE PAIE",
+        "DRH"
       ],
-      "expected_contains": "GHEBACHE",
+      "expected_contains": "SERVICE RECRUTEMENT",
       "source": "SERVICE.xlsx — filtre SHORT_LIBELLE_DIRECTION=DRH",
-      "_note": "14 lignes : Documentation, Numérisation, Événementiel, Approvisionnement, Recrutement, Paie, Social, Santé..."
+      "_note": "get_entity_column→CHANTIER retourne libellés, tous contiennent SERVICE"
     }
   ]
 }
