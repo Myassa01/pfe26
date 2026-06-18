@@ -160,7 +160,7 @@ def load_pipeline():
 def query_direct(pipeline, question: str, history: list = None) -> dict:
     result = pipeline.query(
         question=question,
-        use_query_transform=True,   # ← aligné sur la prod
+        use_query_transform=False,
         stream=False,
         history=history or None,
     )
