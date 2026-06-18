@@ -36,7 +36,7 @@ class Config:
     # ── Retrieval ────────────────────────────────────────────────────────────
     top_k_dense: int = 20   # ↑ augmenté pour ne pas rater des résultats
     top_k_sparse: int = 20  # ↑ augmenté (BM25 fort sur les noms propres)
-    top_k_after_rerank: int = 5
+    top_k_after_rerank: int = 8   # ↑ augmenté de 5→8 pour réduire le risque de perdre des chunks pertinents (ex: ISO 45001 chapitre 1.3)
     rrf_k: int = 60
 
     # ── Mode exhaustif (questions de type "liste-moi tout") ─────────────────
