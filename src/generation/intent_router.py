@@ -198,20 +198,32 @@ class IntentRouter:
         # elle ne peut jamais être une liste exhaustive — le LLM se trompe parfois.
         result = self._sanity_check(result, question)
 
-        # Correction de source : le LLM (petit modèle) se trompe parfois sur le nom
-        # de la table. Si un nom de table apparaît textuellement dans la question,
-        # on prioritise cette correspondance sur le choix du LLM.
-        token_source = self._source_from_question(question)
-        if token_source and token_source != result["source"]:
+        # Correction de source : le LLM se trompe parfois sur le nom de la table.
+        # IMPORTANT : pour intent=list, on ne surcharge PAS la source — le LLM a
+        # identifié la bonne table cible (DEPARTEMENT/SERVICE) et les règles basées
+        # sur "Directeur/Direction" retourneraient DIRECTION même pour
+        # "tous les départements de la Direction X".
+        is_list_intent = result.get("intent") == "list"
+
+        priority_source = self._priority_source(question) if not is_list_intent else None
+        token_source    = self._source_from_question(question) if not is_list_intent else None
+
+        # La règle déterministe prime sur le token-match et le LLM.
+        override_source = priority_source or token_source
+
+        if override_source and override_source != result["source"]:
             logger.info(
-                "  [source-fix] LLM source=%s → token match → %s (question: %r)",
-                result["source"], token_source, question[:50],
+                "  [source-fix] LLM source=%s → %s → %s (question: %r)",
+                result["source"],
+                "priority-rule" if priority_source else "token-match",
+                override_source,
+                question[:50],
             )
             result = dict(result)
-            result["source"] = token_source
+            result["source"] = override_source
             # Si intent=list et source structurée → s'assurer que exhaustive=True
             if (result["intent"] == "list"
-                    and not self.schema.get(token_source, {}).get("is_doc", True)):
+                    and not self.schema.get(override_source, {}).get("is_doc", True)):
                 result["exhaustive"] = True
 
         logger.info(
@@ -225,6 +237,80 @@ class IntentRouter:
             self._cache.popitem(last=False)
 
         return result
+
+    # ── Règles déterministes de priorisation de table ─────────────────────
+    # Chaque règle cible un TITRE EXACT de niveau hiérarchique tel qu'il
+    # apparaît en position de SUJET de la question (avant le nom propre/entité).
+    # On matche uniquement les formulations "qui est le <titre> X" / "qui dirige
+    # la <entité>" — jamais quand le titre est complément ("département du directeur").
+    #
+    # Règle anti-conflit : on compte tous les titres trouvés dans la question.
+    # Si deux niveaux coexistent (ex: "directeur du département"), on ne retourne
+    # rien (None) et on laisse le LLM décider — le contexte est ambigu.
+    _TABLE_PRIORITY_RULES = [
+        # "Directeur/Directrice X", "dirige la Direction X",
+        # "Responsable Sécurité/SSI/RSSI", "Responsable X des Systèmes"
+        # Ces formulations désignent TOUJOURS quelqu'un dans DIRECTION.
+        (re.compile(
+            r"\b(directeur|directrice"
+            r"|dirige\s+la\s+direction"
+            r"|responsable\s+s[eé]curit[eé]"
+            r"|responsable\s+\w+\s+des\s+syst[eè]mes"
+            r"|rssi)\b",
+            re.IGNORECASE,
+        ), "DIRECTION"),
+        # "Chef du/de Département X" — formulation explicite niveau département.
+        # On EXCLUT "directeur du département" (conflit) via anti-conflit ci-dessous.
+        (re.compile(
+            r"\b(chef\s+du\s+d[eé]partement|chef\s+de\s+d[eé]partement)\b",
+            re.IGNORECASE,
+        ), "DEPARTEMENT"),
+        # "Chef du/de Service X", "Responsable du Service X"
+        (re.compile(
+            r"\b(chef\s+du\s+service|chef\s+de\s+service"
+            r"|responsable\s+du\s+service)\b",
+            re.IGNORECASE,
+        ), "SERVICE"),
+    ]
+
+    # Pattern de détection de conflit : deux niveaux hiérarchiques coexistent
+    # dans la même question → on ne force rien, on laisse le LLM gérer.
+    # Couvre : "directeur du département", "département du directeur",
+    #          "quel département ... directeur", "dans quel département ... directeur"
+    _CONFLICT_RE = re.compile(
+        # "directeur" ET "département" dans la même question (tout ordre)
+        r"(?=.*\b(directeur|direction|directrice)\b)(?=.*\bd[eé]partement\b)"
+        r"|"
+        # "directeur" ET "service" dans la même question (tout ordre)
+        r"(?=.*\b(directeur|direction|directrice)\b)(?=.*\bservice\b)"
+        r"|"
+        # "département" ET "service" dans la même question (tout ordre)
+        r"(?=.*\bd[eé]partement\b)(?=.*\bservice\b)",
+        re.IGNORECASE,
+    )
+
+    def _priority_source(self, question: str) -> Optional[str]:
+        """Retourne la table prioritaire si une règle déterministe matche SANS conflit.
+
+        Logique :
+        1. Si la question mélange deux niveaux hiérarchiques (ex: "directeur du
+           département") → conflit détecté → retourne None pour laisser le LLM.
+        2. Sinon, applique les règles dans l'ordre et retourne la première qui matche.
+        3. Uniquement pour les tables présentes dans le schéma (robuste aux projets
+           qui n'ont pas toutes les tables).
+        """
+        # Anti-conflit : si deux niveaux coexistent → ambigu → on ne force rien
+        if self._CONFLICT_RE.search(question):
+            logger.info("  [priority-rule] conflit hiérarchique détecté → skip (%r)",
+                        question[:60])
+            return None
+
+        for pattern, table_name in self._TABLE_PRIORITY_RULES:
+            if pattern.search(question):
+                if table_name in self.schema and not self.schema[table_name].get("is_doc", True):
+                    logger.info("  [priority-rule] '%s' → %s", question[:60], table_name)
+                    return table_name
+        return None
 
     def _source_from_question(self, question: str) -> Optional[str]:
         """Détecte la source directement depuis les tokens de la question.
