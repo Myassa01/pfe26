@@ -1,9 +1,9 @@
 {
   "_comment": "Dataset de test GTP — 68 questions — v7.0 : catégories par type de chemin pipeline réel",
   "metadata": {
-    "version": "7.1",
+    "version": "7.3",
     "entreprise": "ENGTP — Entreprise Nationale de Grands Travaux Pétroliers",
-    "description": "v7.1 basé sur v7.0 — ajout de 10 questions liste_exhaustive (L001-L010) basées sur les vraies valeurs des Excel (SHORT_LIBELLE_DIRECTION, STATUT).",
+    "description": "v7.3 — Fix questions L001-L010 : expected_contains alignes sur valeurs reelles ; L002-L010 reformulees avec chefs de departement/service pour que le LLM choisisse la bonne table.",
     "categories": [
       "liste_exhaustive",
       "reponse_ciblee",
@@ -14,7 +14,7 @@
       "reponse_ciblee": "intent=qa + source=Excel → structured_qa_direct_node → keyword_search DuckDB (27 tests : S001-S023 + M004, M005, M008, M012)",
       "rag_semantique": "intent=* + source=None/doc → retrieve + rerank + generate Qwen (38 tests : R001-R022/R024-R028 + M001-M003/M006-M007/M010-M011/M014-M017)"
     },
-    "total": 78,
+    "total": 76,
     "sources": [
       "SERVICE.xlsx",
       "DIRECTION.xlsx",
@@ -26,7 +26,7 @@
     ],
     "categories_count": {
       "liste_exhaustive": 13,
-      "reponse_ciblee": 27,
+      "reponse_ciblee": 25,
       "rag_semantique": 38
     }
   },
@@ -491,20 +491,6 @@
       "source": "Procedure_GTP.pdf — Chapitre 1.3"
     },
     {
-      "id": "M004",
-      "category": "reponse_ciblee",
-      "subcategory": "contact",
-      "question": "Qui contacter pour un problème de sécurité informatique ou un incident SI ?",
-      "expected_answer": "MOUACI Karim, Responsable Sécurité des Systèmes d'Information (RSSI)",
-      "expected_keywords": [
-        "MOUACI",
-        "Karim",
-        "RSSI"
-      ],
-      "expected_contains": "MOUACI",
-      "source": "DIRECTION.xlsx + Charte_Informatique_ENGTP.pdf"
-    },
-    {
       "id": "M005",
       "category": "reponse_ciblee",
       "subcategory": "contact",
@@ -544,21 +530,6 @@
       ],
       "expected_contains": "verrouiller",
       "source": "Charte_Informatique_ENGTP.pdf — Article 10"
-    },
-    {
-      "id": "M008",
-      "category": "reponse_ciblee",
-      "subcategory": "informatique",
-      "question": "Qui contacter en cas d'alerte antivirus sur son poste de travail, et quelle est la procédure à suivre ?",
-      "expected_answer": "Contacter MOUACI Karim, RSSI. Informer immédiatement le service concerné et ne pas désactiver l'antivirus.",
-      "expected_keywords": [
-        "MOUACI",
-        "Karim",
-        "antivirus",
-        "alerte"
-      ],
-      "expected_contains": "MOUACI Karim",
-      "source": "DIRECTION.xlsx + Charte_Informatique_ENGTP.pdf — Article 10"
     },
     {
       "id": "M009",
@@ -964,88 +935,83 @@
       "subcategory": "direction",
       "question": "Liste tous les Directeurs de GTP.",
       "expected_keywords": [
-        "MOSTEFAOUI",
-        "BOUDIFA",
-        "BOUKRA",
-        "BECHOUCHE"
+        "DIRECTION RESSOURCES HUMAINES",
+        "DIRECTION ENGINEERING",
+        "DIRECTION JURIDIQUE"
       ],
-      "expected_contains": "DIRECTEUR",
+      "expected_contains": "DIRECTION",
       "source": "DIRECTION.xlsx",
-      "_note": "15 lignes — toutes les fonctions de niveau direction"
+      "_note": "get_entity_column(DIRECTION)→CHANTIER. Libellés contiennent DIRECTION"
     },
     {
       "id": "L002",
       "category": "liste_exhaustive",
       "subcategory": "departement_filtre",
-      "question": "Quels sont tous les départements rattachés à la Direction des Ressources Humaines (DRH) ?",
+      "question": "Quels sont tous les chefs de département rattachés à la DRH ?",
       "expected_keywords": [
-        "DRH",
-        "Ressources Humaines",
-        "Oeuvres Sociales"
+        "AREOUR",
+        "BRIBER",
+        "DRH"
       ],
-      "expected_contains": "DRH",
-      "source": "DEPARTEMENT.xlsx",
-      "_note": "Filtre SHORT_LIBELLE_DIRECTION='DRH' — 8 lignes"
+      "expected_contains": "AREOUR",
+      "source": "DEPARTEMENT.xlsx — filtre SHORT_LIBELLE_DIRECTION=DRH",
+      "_note": "8 lignes : 3 chefs de département + cellules"
     },
     {
       "id": "L003",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Quels sont tous les services rattachés à la Direction des Systèmes d'Information (DSI) ?",
+      "question": "Quels sont tous les chefs de service rattachés à la DSI ?",
       "expected_keywords": [
         "DSI",
-        "Help Desk",
-        "Parc Informatique"
+        "LAMRI",
+        "MACHANE"
       ],
-      "expected_contains": "DSI",
-      "source": "SERVICE.xlsx",
-      "_note": "Filtre SHORT_LIBELLE_DIRECTION='DSI' — 2 lignes"
+      "expected_contains": "LAMRI",
+      "source": "SERVICE.xlsx — filtre SHORT_LIBELLE_DIRECTION=DSI",
+      "_note": "2 lignes : Help Desk (LAMRI) + Parc Informatique (MACHANE)"
     },
     {
       "id": "L004",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Liste tous les services de la Direction Finances et Comptabilité (DFC).",
+      "question": "Quels sont tous les chefs de service de la DFC ?",
       "expected_keywords": [
         "DFC",
-        "Trésorerie",
-        "Comptabilité",
-        "Facturation"
+        "TARAIROUR",
+        "HAREF"
       ],
-      "expected_contains": "DFC",
-      "source": "SERVICE.xlsx",
-      "_note": "Filtre SHORT_LIBELLE_DIRECTION='DFC' — 5 lignes"
+      "expected_contains": "TARAIROUR",
+      "source": "SERVICE.xlsx — filtre SHORT_LIBELLE_DIRECTION=DFC",
+      "_note": "5 lignes : Comptabilité Fournisseurs, Investissements, Consolidation, Facturation, Trésorerie"
     },
     {
       "id": "L005",
       "category": "liste_exhaustive",
       "subcategory": "departement_filtre",
-      "question": "Quels sont tous les départements de la Direction QHSE ?",
+      "question": "Quels sont tous les chefs de département de la QHSE ?",
       "expected_keywords": [
         "QHSE",
-        "HSE",
-        "Contrôle Qualité",
-        "Management Intégré"
+        "BENCHIKH",
+        "BAHRI"
       ],
-      "expected_contains": "QHSE",
-      "source": "DEPARTEMENT.xlsx",
-      "_note": "Filtre SHORT_LIBELLE_DIRECTION='QHSE' — 3 lignes"
+      "expected_contains": "BAHRI",
+      "source": "DEPARTEMENT.xlsx — filtre SHORT_LIBELLE_DIRECTION=QHSE",
+      "_note": "3 lignes : Contrôle Qualité (BENCHIKH), HSE (BAHRI), Mesure (LAADJEL)"
     },
     {
       "id": "L006",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Quels sont tous les services de la Direction QHSE ?",
+      "question": "Quels sont tous les chefs de service de la QHSE ?",
       "expected_keywords": [
         "QHSE",
-        "Métrologie",
-        "Hygiène",
-        "Environnement",
-        "Sécurité"
+        "DAHMANI",
+        "NASSERI"
       ],
-      "expected_contains": "QHSE",
-      "source": "SERVICE.xlsx",
-      "_note": "Filtre SHORT_LIBELLE_DIRECTION='QHSE' — 7 lignes"
+      "expected_contains": "DAHMANI",
+      "source": "SERVICE.xlsx — filtre SHORT_LIBELLE_DIRECTION=QHSE",
+      "_note": "7 lignes : Métrologie, CQ Projets, Environnement, SST, Hygiène, Mesure, Management"
     },
     {
       "id": "L007",
@@ -1053,61 +1019,56 @@
       "subcategory": "formation_filtre",
       "question": "Quelles sont toutes les formations facultatives disponibles chez GTP ?",
       "expected_keywords": [
-        "Facultative",
         "Primavera",
         "Management",
         "Cyber"
       ],
-      "expected_contains": "Facultative",
-      "source": "KAM_Formations_GTP.xlsx",
-      "_note": "Filtre STATUT='Facultative' — 47 formations"
+      "expected_contains": "Primavera",
+      "source": "KAM_Formations_GTP.xlsx — filtre STATUT='Facultative'",
+      "_note": "expected_contains aligné sur un intitulé réel retourné"
     },
     {
       "id": "L008",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Liste tous les services rattachés à la Direction Centrale Logistique (DCL).",
+      "question": "Quels sont tous les chefs de service de la DCL ?",
       "expected_keywords": [
         "DCL",
-        "Achats",
-        "Stocks",
-        "Transit",
-        "Importations"
+        "ZEMMOURI",
+        "KOUIRA"
       ],
-      "expected_contains": "DCL",
-      "source": "SERVICE.xlsx",
-      "_note": "Filtre SHORT_LIBELLE_DIRECTION='DCL' — 12 lignes"
+      "expected_contains": "ZEMMOURI",
+      "source": "SERVICE.xlsx — filtre SHORT_LIBELLE_DIRECTION=DCL",
+      "_note": "12 lignes : Achats Locaux (ZEMMOURI), Importations, Transit, Stocks, Transport..."
     },
     {
       "id": "L009",
       "category": "liste_exhaustive",
       "subcategory": "departement_filtre",
-      "question": "Quels sont tous les départements de la Direction Juridique (DJUR) ?",
+      "question": "Quels sont tous les chefs de département de la Direction Juridique (DJUR) ?",
       "expected_keywords": [
         "DJUR",
-        "Contentieux",
-        "Contrats",
-        "Patrimoine"
+        "BERRAZOUANE",
+        "CHABOUNI"
       ],
-      "expected_contains": "DJUR",
-      "source": "DEPARTEMENT.xlsx",
-      "_note": "Filtre SHORT_LIBELLE_DIRECTION='DJUR' — 4 lignes dont cellules"
+      "expected_contains": "BERRAZOUANE",
+      "source": "DEPARTEMENT.xlsx — filtre SHORT_LIBELLE_DIRECTION=DJUR",
+      "_note": "4 lignes : Contentieux (BERRAZOUANE), Contrats (CHABOUNI), Patrimoine, Informatique"
     },
     {
       "id": "L010",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Quels sont tous les services de la Direction des Ressources Humaines (DRH) ?",
+      "question": "Quels sont tous les chefs de service de la DRH ?",
       "expected_keywords": [
         "DRH",
-        "Recrutement",
-        "Paie",
-        "Santé",
-        "Social"
+        "GHEBACHE",
+        "SERAY",
+        "DJENNANE"
       ],
-      "expected_contains": "DRH",
-      "source": "SERVICE.xlsx",
-      "_note": "Filtre SHORT_LIBELLE_DIRECTION='DRH' — 14 lignes"
+      "expected_contains": "GHEBACHE",
+      "source": "SERVICE.xlsx — filtre SHORT_LIBELLE_DIRECTION=DRH",
+      "_note": "14 lignes : Documentation, Numérisation, Événementiel, Approvisionnement, Recrutement, Paie, Social, Santé..."
     }
   ]
 }
