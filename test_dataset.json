@@ -1,9 +1,9 @@
 {
   "_comment": "Dataset de test GTP — 68 questions — v7.0 : catégories par type de chemin pipeline réel",
   "metadata": {
-    "version": "7.3",
+    "version": "7.4",
     "entreprise": "ENGTP — Entreprise Nationale de Grands Travaux Pétroliers",
-    "description": "v7.3 — Fix questions L001-L010 : expected_contains alignes sur valeurs reelles ; L002-L010 reformulees avec chefs de departement/service pour que le LLM choisisse la bonne table.",
+    "description": "v7.4 — Questions L002-L009 reformulees sans sigles pour que Qwen choisisse DEPARTEMENT/SERVICE au lieu de DIRECTION.",
     "categories": [
       "liste_exhaustive",
       "reponse_ciblee",
@@ -947,71 +947,75 @@
       "id": "L002",
       "category": "liste_exhaustive",
       "subcategory": "departement_filtre",
-      "question": "Quels sont tous les chefs de département rattachés à la DRH ?",
+      "question": "Liste tous les chefs de département des ressources humaines.",
       "expected_keywords": [
         "AREOUR",
         "BRIBER",
-        "DRH"
+        "Ressources Humaines"
       ],
       "expected_contains": "AREOUR",
-      "source": "DEPARTEMENT.xlsx — filtre SHORT_LIBELLE_DIRECTION=DRH",
-      "_note": "8 lignes : 3 chefs de département + cellules"
+      "source": "DEPARTEMENT.xlsx — SHORT_LIBELLE_DIRECTION=DRH",
+      "_note": "Sans sigle DRH pour éviter que Qwen choisisse DIRECTION"
     },
     {
       "id": "L003",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Quels sont tous les chefs de service rattachés à la DSI ?",
+      "question": "Liste tous les chefs de service informatique (Help Desk et Parc Informatique).",
       "expected_keywords": [
-        "DSI",
         "LAMRI",
-        "MACHANE"
+        "MACHANE",
+        "Help Desk",
+        "Parc Informatique"
       ],
       "expected_contains": "LAMRI",
-      "source": "SERVICE.xlsx — filtre SHORT_LIBELLE_DIRECTION=DSI",
-      "_note": "2 lignes : Help Desk (LAMRI) + Parc Informatique (MACHANE)"
+      "source": "SERVICE.xlsx — SHORT_LIBELLE_DIRECTION=DSI",
+      "_note": "Intitulés exacts pour guider le keyword_search"
     },
     {
       "id": "L004",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Quels sont tous les chefs de service de la DFC ?",
+      "question": "Liste tous les chefs de service des finances et de la comptabilité.",
       "expected_keywords": [
-        "DFC",
         "TARAIROUR",
-        "HAREF"
+        "HAREF",
+        "Trésorerie",
+        "Comptabilité"
       ],
       "expected_contains": "TARAIROUR",
-      "source": "SERVICE.xlsx — filtre SHORT_LIBELLE_DIRECTION=DFC",
-      "_note": "5 lignes : Comptabilité Fournisseurs, Investissements, Consolidation, Facturation, Trésorerie"
+      "source": "SERVICE.xlsx — SHORT_LIBELLE_DIRECTION=DFC",
+      "_note": "Sans sigle DFC"
     },
     {
       "id": "L005",
       "category": "liste_exhaustive",
       "subcategory": "departement_filtre",
-      "question": "Quels sont tous les chefs de département de la QHSE ?",
+      "question": "Liste tous les chefs de département qualité, hygiène, sécurité et environnement.",
       "expected_keywords": [
-        "QHSE",
         "BENCHIKH",
-        "BAHRI"
+        "BAHRI",
+        "HSE",
+        "Qualité"
       ],
       "expected_contains": "BAHRI",
-      "source": "DEPARTEMENT.xlsx — filtre SHORT_LIBELLE_DIRECTION=QHSE",
-      "_note": "3 lignes : Contrôle Qualité (BENCHIKH), HSE (BAHRI), Mesure (LAADJEL)"
+      "source": "DEPARTEMENT.xlsx — SHORT_LIBELLE_DIRECTION=QHSE",
+      "_note": "Sans sigle QHSE"
     },
     {
       "id": "L006",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Quels sont tous les chefs de service de la QHSE ?",
+      "question": "Liste tous les chefs de service hygiène, sécurité et environnement.",
       "expected_keywords": [
-        "QHSE",
         "DAHMANI",
-        "NASSERI"
+        "NASSERI",
+        "Métrologie",
+        "Hygiène"
       ],
       "expected_contains": "DAHMANI",
-      "source": "SERVICE.xlsx — filtre SHORT_LIBELLE_DIRECTION=QHSE",
-      "_note": "7 lignes : Métrologie, CQ Projets, Environnement, SST, Hygiène, Mesure, Management"
+      "source": "SERVICE.xlsx — SHORT_LIBELLE_DIRECTION=QHSE",
+      "_note": "Sans sigle QHSE"
     },
     {
       "id": "L007",
@@ -1031,29 +1035,32 @@
       "id": "L008",
       "category": "liste_exhaustive",
       "subcategory": "service_filtre",
-      "question": "Quels sont tous les chefs de service de la DCL ?",
+      "question": "Liste tous les chefs de service achats, stocks, transport et logistique.",
       "expected_keywords": [
-        "DCL",
         "ZEMMOURI",
-        "KOUIRA"
+        "KOUIRA",
+        "Achats",
+        "Stocks",
+        "Transport"
       ],
       "expected_contains": "ZEMMOURI",
-      "source": "SERVICE.xlsx — filtre SHORT_LIBELLE_DIRECTION=DCL",
-      "_note": "12 lignes : Achats Locaux (ZEMMOURI), Importations, Transit, Stocks, Transport..."
+      "source": "SERVICE.xlsx — SHORT_LIBELLE_DIRECTION=DCL",
+      "_note": "Sans sigle DCL"
     },
     {
       "id": "L009",
       "category": "liste_exhaustive",
       "subcategory": "departement_filtre",
-      "question": "Quels sont tous les chefs de département de la Direction Juridique (DJUR) ?",
+      "question": "Liste tous les chefs de département juridique (contentieux et contrats).",
       "expected_keywords": [
-        "DJUR",
         "BERRAZOUANE",
-        "CHABOUNI"
+        "CHABOUNI",
+        "Contentieux",
+        "Contrats"
       ],
       "expected_contains": "BERRAZOUANE",
-      "source": "DEPARTEMENT.xlsx — filtre SHORT_LIBELLE_DIRECTION=DJUR",
-      "_note": "4 lignes : Contentieux (BERRAZOUANE), Contrats (CHABOUNI), Patrimoine, Informatique"
+      "source": "DEPARTEMENT.xlsx — SHORT_LIBELLE_DIRECTION=DJUR",
+      "_note": "Sans sigle DJUR"
     },
     {
       "id": "L010",
