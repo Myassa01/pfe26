@@ -81,9 +81,10 @@ def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
     return None
 
 
-# ─────────────────────────────────────────────────────────────
-# Prompt — version corrigée
-# ─────────────────────────────────────────────────────────────
+"""
+Correctif du prompt d'analyse — section FORMAT uniquement.
+Remplace ANALYSIS_PROMPT dans cv_analyzer.py
+"""
 
 ANALYSIS_PROMPT = """
 Tu es un système ATS (Applicant Tracking System) expert en recrutement chez Sonatrach.
@@ -108,10 +109,12 @@ CV DU CANDIDAT
 ════════════════════════════════════════
 
 Lis attentivement le CV et identifie :
-- Le domaine professionnel RÉEL du candidat (ex: Soudage, Comptabilité, Informatique, Espaces verts…)
+- Le domaine professionnel RÉEL du candidat (ex: Soudage, Comptabilité, Informatique…)
 - Son diplôme le plus élevé et l'année
 - Ses années d'expérience totales dans son domaine
 - Ses compétences techniques principales
+
+NE PAS inclure cette analyse dans ta réponse — elle est interne.
 
 ════════════════════════════════════════
 ÉTAPE 2 — COMPARER AU POSTE CIBLE
@@ -120,118 +123,49 @@ Lis attentivement le CV et identifie :
 Si POSTE CIBLE est précisé :
   → Compare le domaine du CV avec le poste demandé.
   → RÈGLE ABSOLUE : un soudeur n'est PAS comptable. Un comptable n'est PAS développeur.
-    Un jardinier n'est PAS un comptable, et inversement.
-    Les domaines incompatibles = score 0 à 2/10, point final, SANS EXCEPTION,
-    même si le CV est excellent dans son propre domaine.
+    Les domaines incompatibles = score 0 à 2/10, point final.
   → RÈGLE ABSOLUE : l'expérience Oil & Gas n'est un BONUS que si le candidat
-    est déjà dans le bon domaine. Un soudeur ou un jardinier chez Sonatrach qui
-    postule comptable n'a AUCUN bonus — son expérience Oil & Gas est dans un autre métier.
+    est déjà dans le bon domaine.
   → Score basé UNIQUEMENT sur la pertinence du profil pour le poste demandé.
 
 Si POSTE CIBLE est "Non précisé" :
-  → N'invente PAS un poste au hasard.
-  → Cherche dans le RÉFÉRENTIEL DES POSTES SONATRACH fourni ci-dessus
-    le ou les postes qui correspondent AU DOMAINE RÉEL du candidat.
-  → Si tu trouves un poste correspondant dans le référentiel, utilise son titre exact.
-  → Si aucun poste dans le référentiel ne correspond, écris le titre de poste naturel
-    qui correspond à son vrai métier.
+  → Cherche dans le RÉFÉRENTIEL DES POSTES SONATRACH le poste correspondant au domaine RÉEL.
   → Note le candidat sur sa capacité à occuper CE poste recommandé.
 
 ════════════════════════════════════════
 BARÈME DE NOTATION (sur 10)
 ════════════════════════════════════════
 
-CAS INCOMPATIBILITÉ TOTALE (domaines différents) :
-→ Score = 0 à 2 maximum. Ne pas aller plus haut, même si le CV est excellent.
-→ Cette règle est STRICTE et NON NÉGOCIABLE : un score de 3, 4 ou plus pour une
-  incompatibilité totale de domaine est une ERREUR.
+CAS INCOMPATIBILITÉ TOTALE : Score = 0 à 2 maximum.
 
 CAS COMPATIBILITÉ :
-
 1. Diplôme/Formation (0–3 pts)
-   3 = diplôme exactement requis pour ce poste
-   2 = diplôme proche ou équivalent
-   1 = formation partiellement liée
-   0 = aucun diplôme pertinent
-
 2. Compétences techniques spécifiques au poste (0–3 pts)
-   3 = compétences clés du poste toutes présentes
-   2 = compétences principales présentes, quelques lacunes
-   1 = compétences partielles
-   0 = compétences absentes
-
 3. Expérience professionnelle dans le domaine du poste (0–3 pts)
-   3 = expérience longue et directement pertinente (5+ ans)
-   2 = expérience modérée et pertinente (2–5 ans)
-   1 = expérience courte ou indirecte
-   0 = aucune expérience pertinente
-
-4. Expérience Sonatrach/Oil & Gas dans ce MÊME domaine (0–1 pt)
-   1 = a travaillé chez Sonatrach/filiale dans le domaine du poste demandé
-   0 = sinon (même si Oil & Gas dans un autre métier)
-
-EXEMPLES CONCRETS :
-- Nadia (comptable, 11 ans d'expérience, SAP, master finance) → poste "Comptable" → 8 ou 9/10
-- Hamdi (soudeur, 19 ans) → poste "Comptable" → 0/10, Incompatible
-- Hamdi (soudeur, 19 ans) → poste "Soudeur pipeline" → 9 ou 10/10
-- Mourad (jardinier, 8 ans) → poste "Assistant Directeur Finances & Comptabilité" → 0 à 2/10, Incompatible
-
 ════════════════════════════════════════
-POSTE RECOMMANDÉ — RÈGLES STRICTES
+⚠️ FORMAT DE RÉPONSE — STRICTEMENT OBLIGATOIRE
 ════════════════════════════════════════
 
-Le POSTE RECOMMANDÉ doit être :
-1. Basé sur le domaine RÉEL du CV (pas sur le poste demandé)
-2. Choisi de préférence parmi les postes du RÉFÉRENTIEL SONATRACH fourni
-3. UNIQUEMENT un titre de poste court (2 à 6 mots) — JAMAIS une phrase,
-   JAMAIS une explication, JAMAIS de ponctuation finale (":", ".", etc.)
-4. Cohérent avec le niveau du candidat (BEP ≠ Ingénieur)
-
-Si le domaine du CV n'a AUCUN équivalent dans le référentiel fourni (ex: jardinage,
-ménage, sécurité non listée…), N'ÉCRIS PAS de phrase d'excuse ou d'explication.
-INVENTE directement un titre de poste naturel et concis correspondant au vrai métier
-du candidat, dans le même style que les exemples ci-dessous.
-
-Exemples de titres VALIDES (courts, directs) :
-- "Soudeur Qualifié Pipeline"
-- "Comptable Principal"
-- "Développeur Informatique"
-- "Jardinier Qualifié"
-- "Agent d'Entretien Espaces Verts"
-
-Exemples de réponses INVALIDES (interdites, car ce sont des phrases) :
-- "Pour un candidat ayant des compétences techniques similairement axées, il serait
-   conseillé de recommander un poste moins spécialisé dans la finance, tel que :"
-- "Il serait préférable d'orienter ce candidat vers..."
-
-════════════════════════════════════════
-⚠️ FORMAT DE RÉPONSE — OBLIGATOIRE ET STRICT
-════════════════════════════════════════
-
-INTERDICTIONS :
-- PAS de tableaux markdown (|col|col|)
-- PAS de listes numérotées
-- PAS de phrases de justification longues
-- PAS d'introduction ni de conclusion
-- PAS de texte hors des sections définies
-- PAS de phrase à la place du POSTE RECOMMANDÉ — un titre court UNIQUEMENT
-
-FORMAT EXACT À RESPECTER :
+Tu DOIS produire EXACTEMENT ce format, rien d'autre.
+INTERDICTION ABSOLUE de produire du texte hors des balises ci-dessous.
+INTERDICTION d'écrire des phrases introductives ou des explications.
+INTERDICTION de tableaux markdown.
+INTERDICTION de numéros de liste.
 
 **SCORE** : X/10
 **DOMAINE** : Compatible / Partiellement compatible / Incompatible
 **DÉCISION** : Recommandé / À étudier / Non recommandé
 
 **ATOUTS**
-- [point concis issu du CV, 1 ligne]
-- [point concis issu du CV, 1 ligne]
-- [point concis issu du CV, 1 ligne]
+- [atout concis du CV, 1 ligne max]
+- [atout concis du CV, 1 ligne max]
+- [atout concis du CV, 1 ligne max]
 
 **LACUNES**
-- [point concis, 1 ligne]
-- [point concis, 1 ligne]
+- [lacune concise, 1 ligne max]
+- [lacune concise, 1 ligne max]
 
-**POSTE RECOMMANDÉ** : [titre court de 2 à 6 mots, jamais une phrase]
+**POSTE RECOMMANDÉ** : [titre exact du poste, issu du référentiel si possible]
 
 **ANNÉES_EXPÉRIENCE** : [nombre entier, ex: 11, ou -1 si inconnu]
 **ANNÉE_DIPLOME** : [année ex: 2013, ou 0 si inconnue]
@@ -317,16 +251,9 @@ def analyze_cv_with_pipeline(
                 "RESPECTE STRICTEMENT le format demandé : **SCORE**, **DOMAINE**, **DÉCISION**, "
                 "**ATOUTS**, **LACUNES**, **POSTE RECOMMANDÉ**, **ANNÉES_EXPÉRIENCE**, **ANNÉE_DIPLOME**. "
                 "JAMAIS de tableaux markdown. JAMAIS de listes numérotées. "
-                "Sois strict et objectif : un soudeur, un jardinier ou tout profil hors-domaine "
-                "postulant comptable = 0 à 2/10, incompatible, SANS EXCEPTION. "
+                "Sois strict et objectif : un soudeur postulant comptable = 0/10 incompatible. "
                 "Un comptable expérimenté pour un poste comptable = score élevé 7-9/10. "
-                "Le bonus Oil&Gas ne s'applique QUE si l'expérience pétrolière est dans le MÊME "
-                "domaine que le poste. "
-                "Le champ **POSTE RECOMMANDÉ** doit TOUJOURS être un titre court de 2 à 6 mots, "
-                "JAMAIS une phrase explicative, JAMAIS de texte se terminant par ':'. "
-                "Si aucun poste du référentiel ne correspond au domaine réel du candidat, "
-                "invente directement un titre de poste court et naturel (ex: 'Jardinier Qualifié'), "
-                "sans phrase d'introduction ni de justification."
+                "Le bonus Oil&Gas ne s'applique QUE si l'expérience pétrolière est dans le MÊME domaine que le poste."
             ),
             temperature=0.0,
             max_tokens=pipeline.config.llm_max_tokens_long,
@@ -407,32 +334,6 @@ def _extract_score(text: str) -> Optional[int]:
     return None
 
 
-def _is_sentence_not_title(value: str) -> bool:
-    """
-    Détecte si la valeur extraite ressemble à une phrase explicative
-    plutôt qu'à un titre de poste court (cas où le LLM n'a pas respecté
-    le format malgré les instructions).
-    """
-    if not value:
-        return True
-    v = value.strip()
-    # Trop de mots pour un titre de poste
-    if len(v.split()) > 7:
-        return True
-    # Se termine par une ponctuation de phrase (souvent ":" avant une liste)
-    if v.endswith((":", ".", ",", ";")):
-        return True
-    # Contient des connecteurs typiques d'une phrase explicative
-    sentence_markers = (
-        "pour un candidat", "il serait", "il est conseillé", "nous recommandons",
-        "tel que", "tels que", "serait conseillé", "serait préférable",
-    )
-    v_lower = v.lower()
-    if any(marker in v_lower for marker in sentence_markers):
-        return True
-    return False
-
-
 def _extract_recommended_poste(text: str) -> Optional[str]:
     import re
     patterns = [
@@ -443,7 +344,7 @@ def _extract_recommended_poste(text: str) -> Optional[str]:
         m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
         if m:
             value = m.group(1).strip().strip("*•[] \t")
-            if value and "[" not in value and len(value) > 3 and not _is_sentence_not_title(value):
+            if value and "[" not in value and len(value) > 3:
                 return value
     return None
 
