@@ -108,7 +108,7 @@ CV DU CANDIDAT
 ════════════════════════════════════════
 
 Lis attentivement le CV et identifie :
-- Le domaine professionnel RÉEL du candidat (ex: Soudage, Comptabilité, Informatique…)
+- Le domaine professionnel RÉEL du candidat (ex: Soudage, Comptabilité, Informatique, Espaces verts…)
 - Son diplôme le plus élevé et l'année
 - Ses années d'expérience totales dans son domaine
 - Ses compétences techniques principales
@@ -120,10 +120,12 @@ Lis attentivement le CV et identifie :
 Si POSTE CIBLE est précisé :
   → Compare le domaine du CV avec le poste demandé.
   → RÈGLE ABSOLUE : un soudeur n'est PAS comptable. Un comptable n'est PAS développeur.
-    Les domaines incompatibles = score 0 à 2/10, point final.
+    Un jardinier n'est PAS un comptable, et inversement.
+    Les domaines incompatibles = score 0 à 2/10, point final, SANS EXCEPTION,
+    même si le CV est excellent dans son propre domaine.
   → RÈGLE ABSOLUE : l'expérience Oil & Gas n'est un BONUS que si le candidat
-    est déjà dans le bon domaine. Un soudeur chez Sonatrach qui postule comptable
-    n'a AUCUN bonus — son expérience Oil & Gas est dans un autre métier.
+    est déjà dans le bon domaine. Un soudeur ou un jardinier chez Sonatrach qui
+    postule comptable n'a AUCUN bonus — son expérience Oil & Gas est dans un autre métier.
   → Score basé UNIQUEMENT sur la pertinence du profil pour le poste demandé.
 
 Si POSTE CIBLE est "Non précisé" :
@@ -141,6 +143,8 @@ BARÈME DE NOTATION (sur 10)
 
 CAS INCOMPATIBILITÉ TOTALE (domaines différents) :
 → Score = 0 à 2 maximum. Ne pas aller plus haut, même si le CV est excellent.
+→ Cette règle est STRICTE et NON NÉGOCIABLE : un score de 3, 4 ou plus pour une
+  incompatibilité totale de domaine est une ERREUR.
 
 CAS COMPATIBILITÉ :
 
@@ -170,6 +174,7 @@ EXEMPLES CONCRETS :
 - Nadia (comptable, 11 ans d'expérience, SAP, master finance) → poste "Comptable" → 8 ou 9/10
 - Hamdi (soudeur, 19 ans) → poste "Comptable" → 0/10, Incompatible
 - Hamdi (soudeur, 19 ans) → poste "Soudeur pipeline" → 9 ou 10/10
+- Mourad (jardinier, 8 ans) → poste "Assistant Directeur Finances & Comptabilité" → 0 à 2/10, Incompatible
 
 ════════════════════════════════════════
 POSTE RECOMMANDÉ — RÈGLES STRICTES
@@ -178,13 +183,26 @@ POSTE RECOMMANDÉ — RÈGLES STRICTES
 Le POSTE RECOMMANDÉ doit être :
 1. Basé sur le domaine RÉEL du CV (pas sur le poste demandé)
 2. Choisi de préférence parmi les postes du RÉFÉRENTIEL SONATRACH fourni
-3. Un seul titre précis — jamais une liste, jamais vague
+3. UNIQUEMENT un titre de poste court (2 à 6 mots) — JAMAIS une phrase,
+   JAMAIS une explication, JAMAIS de ponctuation finale (":", ".", etc.)
 4. Cohérent avec le niveau du candidat (BEP ≠ Ingénieur)
 
-Exemples :
-- Soudeur qualifié pipeline → "Soudeur Qualifié" ou titre exact du référentiel
-- Comptable avec master → "Comptable Principal" ou titre exact du référentiel
-- Développeur → "Développeur Informatique" ou titre exact du référentiel
+Si le domaine du CV n'a AUCUN équivalent dans le référentiel fourni (ex: jardinage,
+ménage, sécurité non listée…), N'ÉCRIS PAS de phrase d'excuse ou d'explication.
+INVENTE directement un titre de poste naturel et concis correspondant au vrai métier
+du candidat, dans le même style que les exemples ci-dessous.
+
+Exemples de titres VALIDES (courts, directs) :
+- "Soudeur Qualifié Pipeline"
+- "Comptable Principal"
+- "Développeur Informatique"
+- "Jardinier Qualifié"
+- "Agent d'Entretien Espaces Verts"
+
+Exemples de réponses INVALIDES (interdites, car ce sont des phrases) :
+- "Pour un candidat ayant des compétences techniques similairement axées, il serait
+   conseillé de recommander un poste moins spécialisé dans la finance, tel que :"
+- "Il serait préférable d'orienter ce candidat vers..."
 
 ════════════════════════════════════════
 ⚠️ FORMAT DE RÉPONSE — OBLIGATOIRE ET STRICT
@@ -196,6 +214,7 @@ INTERDICTIONS :
 - PAS de phrases de justification longues
 - PAS d'introduction ni de conclusion
 - PAS de texte hors des sections définies
+- PAS de phrase à la place du POSTE RECOMMANDÉ — un titre court UNIQUEMENT
 
 FORMAT EXACT À RESPECTER :
 
@@ -212,7 +231,7 @@ FORMAT EXACT À RESPECTER :
 - [point concis, 1 ligne]
 - [point concis, 1 ligne]
 
-**POSTE RECOMMANDÉ** : [titre exact du poste, issu du référentiel si possible]
+**POSTE RECOMMANDÉ** : [titre court de 2 à 6 mots, jamais une phrase]
 
 **ANNÉES_EXPÉRIENCE** : [nombre entier, ex: 11, ou -1 si inconnu]
 **ANNÉE_DIPLOME** : [année ex: 2013, ou 0 si inconnue]
@@ -298,9 +317,16 @@ def analyze_cv_with_pipeline(
                 "RESPECTE STRICTEMENT le format demandé : **SCORE**, **DOMAINE**, **DÉCISION**, "
                 "**ATOUTS**, **LACUNES**, **POSTE RECOMMANDÉ**, **ANNÉES_EXPÉRIENCE**, **ANNÉE_DIPLOME**. "
                 "JAMAIS de tableaux markdown. JAMAIS de listes numérotées. "
-                "Sois strict et objectif : un soudeur postulant comptable = 0/10 incompatible. "
+                "Sois strict et objectif : un soudeur, un jardinier ou tout profil hors-domaine "
+                "postulant comptable = 0 à 2/10, incompatible, SANS EXCEPTION. "
                 "Un comptable expérimenté pour un poste comptable = score élevé 7-9/10. "
-                "Le bonus Oil&Gas ne s'applique QUE si l'expérience pétrolière est dans le MÊME domaine que le poste."
+                "Le bonus Oil&Gas ne s'applique QUE si l'expérience pétrolière est dans le MÊME "
+                "domaine que le poste. "
+                "Le champ **POSTE RECOMMANDÉ** doit TOUJOURS être un titre court de 2 à 6 mots, "
+                "JAMAIS une phrase explicative, JAMAIS de texte se terminant par ':'. "
+                "Si aucun poste du référentiel ne correspond au domaine réel du candidat, "
+                "invente directement un titre de poste court et naturel (ex: 'Jardinier Qualifié'), "
+                "sans phrase d'introduction ni de justification."
             ),
             temperature=0.0,
             max_tokens=pipeline.config.llm_max_tokens_long,
@@ -381,6 +407,32 @@ def _extract_score(text: str) -> Optional[int]:
     return None
 
 
+def _is_sentence_not_title(value: str) -> bool:
+    """
+    Détecte si la valeur extraite ressemble à une phrase explicative
+    plutôt qu'à un titre de poste court (cas où le LLM n'a pas respecté
+    le format malgré les instructions).
+    """
+    if not value:
+        return True
+    v = value.strip()
+    # Trop de mots pour un titre de poste
+    if len(v.split()) > 7:
+        return True
+    # Se termine par une ponctuation de phrase (souvent ":" avant une liste)
+    if v.endswith((":", ".", ",", ";")):
+        return True
+    # Contient des connecteurs typiques d'une phrase explicative
+    sentence_markers = (
+        "pour un candidat", "il serait", "il est conseillé", "nous recommandons",
+        "tel que", "tels que", "serait conseillé", "serait préférable",
+    )
+    v_lower = v.lower()
+    if any(marker in v_lower for marker in sentence_markers):
+        return True
+    return False
+
+
 def _extract_recommended_poste(text: str) -> Optional[str]:
     import re
     patterns = [
@@ -391,7 +443,7 @@ def _extract_recommended_poste(text: str) -> Optional[str]:
         m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
         if m:
             value = m.group(1).strip().strip("*•[] \t")
-            if value and "[" not in value and len(value) > 3:
+            if value and "[" not in value and len(value) > 3 and not _is_sentence_not_title(value):
                 return value
     return None
 
