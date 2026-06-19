@@ -1,19 +1,10 @@
 """
 Module d'analyse de CV via pipeline RAG.
 Extraction CV + recherche exigences + analyse LLM.
-
-Format de sortie LLM : JSON strict (beaucoup plus fiable à respecter pour un
-petit modèle comme Qwen2.5-1.5B-Instruct qu'un format markdown à 6 sections).
-Le backend reconstruit ensuite le texte markdown **SCORE**/**DOMAINE**/etc.
-attendu par le frontend — aucun changement côté React n'est nécessaire.
-Si le modèle ne produit pas de JSON valide, on retente une fois, puis on
-retombe sur l'ancien parsing par regex sur texte libre en dernier recours.
 """
 
 import io
-import json
 import logging
-import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -90,16 +81,10 @@ def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
     return None
 
 
-# ─────────────────────────────────────────────────────────────
-# Prompt — version JSON strict
-# ─────────────────────────────────────────────────────────────
-#
-# Pourquoi JSON plutôt que markdown à sections ?
-# Un petit modèle (1.5B) "dérive" facilement sur un format markdown à
-# plusieurs sections imbriquées (il oublie une section, écrit de la prose
-# libre, etc.). Un objet JSON plat avec des clés fixes est beaucoup plus
-# facile à respecter pour un petit modèle ET beaucoup plus simple/robuste
-# à parser côté backend (json.loads au lieu de regex fragiles).
+"""
+Correctif du prompt d'analyse — section FORMAT uniquement.
+Remplace ANALYSIS_PROMPT dans cv_analyzer.py
+"""
 
 ANALYSIS_PROMPT = """
 Tu es un système ATS (Applicant Tracking System) expert en recrutement chez Sonatrach.
@@ -120,63 +105,76 @@ CV DU CANDIDAT
 {cv_text}
 
 ════════════════════════════════════════
-INSTRUCTIONS
+ÉTAPE 1 — IDENTIFIER LE DOMAINE DU CV
 ════════════════════════════════════════
 
-1. Identifie le domaine professionnel RÉEL du candidat (ex: Soudage, Comptabilité,
-   Informatique, Espaces verts…), son diplôme le plus élevé et son année,
-   ses années d'expérience totales dans son domaine, ses compétences principales.
+Lis attentivement le CV et identifie :
+- Le domaine professionnel RÉEL du candidat (ex: Soudage, Comptabilité, Informatique…)
+- Son diplôme le plus élevé et l'année
+- Ses années d'expérience totales dans son domaine
+- Ses compétences techniques principales
 
-2. Compare ce domaine au POSTE CIBLE :
-   - Si les domaines sont totalement incompatibles (ex: jardinier vs comptable,
-     soudeur vs développeur), le score DOIT être entre 0 et 2 sur 10, SANS EXCEPTION,
-     même si le CV est excellent dans son propre domaine.
-   - L'expérience Oil & Gas / Sonatrach n'est un bonus QUE si elle est dans le
-     MÊME domaine que le poste cible. Sinon elle ne compte pas comme bonus.
-   - Si POSTE CIBLE est "Non précisé", cherche dans le RÉFÉRENTIEL le poste qui
-     correspond le mieux au domaine réel du candidat, et utilise son titre exact.
-     Si rien ne correspond dans le référentiel, choisis un titre de poste court
-     et naturel correspondant au vrai métier du candidat.
-
-3. Score sur 10 (uniquement si compatibilité de domaine) :
-   - Diplôme/formation pertinents pour le poste (0-3)
-   - Compétences techniques spécifiques au poste (0-3)
-   - Expérience professionnelle pertinente (0-3)
-   - Expérience Sonatrach/Oil & Gas dans le MÊME domaine (0-1)
+NE PAS inclure cette analyse dans ta réponse — elle est interne.
 
 ════════════════════════════════════════
-FORMAT DE RÉPONSE — OBLIGATOIRE
+ÉTAPE 2 — COMPARER AU POSTE CIBLE
 ════════════════════════════════════════
 
-Réponds UNIQUEMENT avec un objet JSON valide. RIEN D'AUTRE.
-Pas de markdown, pas de ```json, pas de texte avant ou après, pas d'explication.
-Le JSON doit avoir EXACTEMENT ces clés :
+Si POSTE CIBLE est précisé :
+  → Compare le domaine du CV avec le poste demandé.
+  → RÈGLE ABSOLUE : un soudeur n'est PAS comptable. Un comptable n'est PAS développeur.
+    Les domaines incompatibles = score 0 à 2/10, point final.
+  → RÈGLE ABSOLUE : l'expérience Oil & Gas n'est un BONUS que si le candidat
+    est déjà dans le bon domaine.
+  → Score basé UNIQUEMENT sur la pertinence du profil pour le poste demandé.
 
-{{
-  "score": <entier 0 à 10>,
-  "domaine": "Compatible" | "Partiellement compatible" | "Incompatible",
-  "decision": "Recommandé" | "À étudier" | "Non recommandé",
-  "atouts": ["point concis 1", "point concis 2", "point concis 3"],
-  "lacunes": ["point concis 1", "point concis 2"],
-  "poste_recommande": "titre court de 2 à 6 mots, JAMAIS une phrase",
-  "annees_experience": <entier, -1 si inconnu>,
-  "annee_diplome": <entier ex: 2013, 0 si inconnue>
-}}
+Si POSTE CIBLE est "Non précisé" :
+  → Cherche dans le RÉFÉRENTIEL DES POSTES SONATRACH le poste correspondant au domaine RÉEL.
+  → Note le candidat sur sa capacité à occuper CE poste recommandé.
 
-Exemple de poste_recommande VALIDE : "Comptable Principal", "Soudeur Qualifié Pipeline",
-"Jardinier Qualifié". INVALIDE : une phrase explicative.
+════════════════════════════════════════
+BARÈME DE NOTATION (sur 10)
+════════════════════════════════════════
+
+CAS INCOMPATIBILITÉ TOTALE : Score = 0 à 2 maximum.
+
+CAS COMPATIBILITÉ :
+1. Diplôme/Formation (0–3 pts)
+2. Compétences techniques spécifiques au poste (0–3 pts)
+3. Expérience professionnelle dans le domaine du poste (0–3 pts)
+════════════════════════════════════════
+⚠️ FORMAT DE RÉPONSE — STRICTEMENT OBLIGATOIRE
+════════════════════════════════════════
+
+Tu DOIS produire EXACTEMENT ce format, rien d'autre.
+INTERDICTION ABSOLUE de produire du texte hors des balises ci-dessous.
+INTERDICTION d'écrire des phrases introductives ou des explications.
+INTERDICTION de tableaux markdown.
+INTERDICTION de numéros de liste.
+
+**SCORE** : X/10
+**DOMAINE** : Compatible / Partiellement compatible / Incompatible
+**DÉCISION** : Recommandé / À étudier / Non recommandé
+
+**ATOUTS**
+- [atout concis du CV, 1 ligne max]
+- [atout concis du CV, 1 ligne max]
+- [atout concis du CV, 1 ligne max]
+
+**LACUNES**
+- [lacune concise, 1 ligne max]
+- [lacune concise, 1 ligne max]
+
+**POSTE RECOMMANDÉ** : [titre exact du poste, issu du référentiel si possible]
+
+**ANNÉES_EXPÉRIENCE** : [nombre entier, ex: 11, ou -1 si inconnu]
+**ANNÉE_DIPLOME** : [année ex: 2013, ou 0 si inconnue]
 """
 
-RETRY_REMINDER = (
-    "\n\nRAPPEL CRITIQUE : ta dernière réponse n'était pas un JSON valide. "
-    "Réponds CETTE FOIS uniquement avec l'objet JSON demandé, rien d'autre, "
-    "pas de texte avant ou après, pas de ```."
-)
 
-
-def build_analysis_prompt(cv_text: str, poste: str, job_context: str, retry: bool = False) -> str:
+def build_analysis_prompt(cv_text: str, poste: str, job_context: str) -> str:
     poste_label = poste if poste else "Non précisé"
-    prompt = ANALYSIS_PROMPT.format(
+    return ANALYSIS_PROMPT.format(
         poste=poste_label,
         job_context=job_context or (
             "Aucun référentiel disponible. "
@@ -184,152 +182,6 @@ def build_analysis_prompt(cv_text: str, poste: str, job_context: str, retry: boo
         ),
         cv_text=cv_text[:4000],
     )
-    if retry:
-        prompt += RETRY_REMINDER
-    return prompt
-
-
-SYSTEM_PROMPT = (
-    "Tu es un système ATS RH chez Sonatrach. Réponds UNIQUEMENT en français. "
-    "Réponds UNIQUEMENT avec un objet JSON valide respectant exactement le schéma "
-    "demandé. JAMAIS de texte hors du JSON, JAMAIS de ```json, JAMAIS d'explication. "
-    "Sois strict et objectif : un profil hors-domaine (ex: jardinier postulant "
-    "comptable) = score 0 à 2/10, incompatible, SANS EXCEPTION. "
-    "Un profil dans le bon domaine avec une expérience solide = score élevé 7-9/10. "
-    "Le champ poste_recommande doit TOUJOURS être un titre court de 2 à 6 mots, "
-    "jamais une phrase."
-)
-
-
-# ─────────────────────────────────────────────────────────────
-# Parsing JSON robuste
-# ─────────────────────────────────────────────────────────────
-
-def _extract_json_object(text: str) -> Optional[dict]:
-    """Extrait et parse le premier objet JSON valide trouvé dans le texte.
-    Tolère du texte parasite avant/après (préambule, ```json, etc.)."""
-    if not text:
-        return None
-
-    # Tentative directe
-    try:
-        return json.loads(text.strip())
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # Tentative sur le bloc { ... } le plus large trouvé
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidate = text[start:end + 1]
-        try:
-            return json.loads(candidate)
-        except (json.JSONDecodeError, ValueError):
-            # Nettoyage léger : virgules traînantes, guillemets simples
-            cleaned = re.sub(r",\s*([}\]])", r"\1", candidate)
-            cleaned = cleaned.replace("'", '"')
-            try:
-                return json.loads(cleaned)
-            except (json.JSONDecodeError, ValueError):
-                return None
-    return None
-
-
-def _is_sentence_not_title(value: str) -> bool:
-    """Détecte si une valeur ressemble à une phrase plutôt qu'à un titre court."""
-    if not value:
-        return True
-    v = value.strip()
-    if len(v.split()) > 7:
-        return True
-    if v.endswith((":", ".", ",", ";")):
-        return True
-    sentence_markers = (
-        "pour un candidat", "il serait", "il est conseillé", "nous recommandons",
-        "tel que", "tels que", "serait conseillé", "serait préférable",
-    )
-    v_lower = v.lower()
-    return any(marker in v_lower for marker in sentence_markers)
-
-
-def _normalize_json_result(data: dict) -> Optional[dict]:
-    """Valide et normalise un dict JSON parsé en champs propres et sûrs."""
-    if not isinstance(data, dict):
-        return None
-
-    def _safe_int(value, lo, hi, default=None):
-        try:
-            v = int(value)
-            return v if lo <= v <= hi else default
-        except (TypeError, ValueError):
-            return default
-
-    score = _safe_int(data.get("score"), 0, 10)
-    if score is None:
-        return None  # le score est la seule clé vraiment indispensable
-
-    domaine  = str(data.get("domaine") or "").strip() or None
-    decision = str(data.get("decision") or "").strip() or None
-
-    atouts = [str(a).strip() for a in (data.get("atouts") or []) if str(a).strip()]
-    lacunes = [str(a).strip() for a in (data.get("lacunes") or []) if str(a).strip()]
-
-    poste_rec = str(data.get("poste_recommande") or "").strip() or None
-    if poste_rec and _is_sentence_not_title(poste_rec):
-        poste_rec = None
-
-    years_exp = _safe_int(data.get("annees_experience"), -1, 50)
-    diploma_year = _safe_int(data.get("annee_diplome"), 1950, 2100)
-    if diploma_year == 0:
-        diploma_year = None
-
-    return {
-        "score": score,
-        "domaine": domaine,
-        "decision": decision,
-        "atouts": atouts,
-        "lacunes": lacunes,
-        "poste_recommande": poste_rec,
-        "annees_experience": years_exp,
-        "annee_diplome": diploma_year,
-    }
-
-
-def _render_markdown_from_json(data: dict) -> str:
-    """Reconstruit le texte au format markdown attendu par le frontend
-    (**SCORE**, **DOMAINE**, etc.) à partir du JSON normalisé. Ainsi le
-    frontend React n'a besoin d'aucune modification."""
-    lines = [
-        f"**SCORE** : {data['score']}/10",
-    ]
-    if data["domaine"]:
-        lines.append(f"**DOMAINE** : {data['domaine']}")
-    if data["decision"]:
-        lines.append(f"**DÉCISION** : {data['decision']}")
-
-    lines.append("")
-    if data["atouts"]:
-        lines.append("**ATOUTS**")
-        for a in data["atouts"]:
-            lines.append(f"- {a}")
-        lines.append("")
-
-    if data["lacunes"]:
-        lines.append("**LACUNES**")
-        for l in data["lacunes"]:
-            lines.append(f"- {l}")
-        lines.append("")
-
-    if data["poste_recommande"]:
-        lines.append(f"**POSTE RECOMMANDÉ** : {data['poste_recommande']}")
-
-    years = data["annees_experience"]
-    lines.append(f"**ANNÉES_EXPÉRIENCE** : {years if years is not None else -1}")
-
-    diploma = data["annee_diplome"]
-    lines.append(f"**ANNÉE_DIPLOME** : {diploma if diploma is not None else 0}")
-
-    return "\n".join(lines)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -350,9 +202,12 @@ def analyze_cv_with_pipeline(
     search_poste = poste.strip() if poste else ""
 
     # ── Requête RAG ────────────────────────────────────────────
+    # Si pas de poste : chercher dans le référentiel les postes pertinents
+    # en se basant sur les mots-clés du CV
     if search_poste:
         search_query = f"exigences diplômes compétences requis poste {search_poste} Sonatrach"
     else:
+        # Extraire les 5 premiers mots-clés métier du CV
         cv_keywords = " ".join(cv_text[:800].split())[:400]
         search_query = f"postes Sonatrach référentiel {cv_keywords}"
 
@@ -385,51 +240,34 @@ def analyze_cv_with_pipeline(
         job_context = ""
         sources = []
 
-    # ── Appel LLM (JSON strict, avec un retry si parsing échoue) ──────────
-    raw_answer = None
-    parsed = None
+    # ── Appel LLM ─────────────────────────────────────────────
+    prompt = build_analysis_prompt(cv_text=cv_text, poste=search_poste, job_context=job_context)
 
-    for attempt in range(2):
-        prompt = build_analysis_prompt(
-            cv_text=cv_text, poste=search_poste, job_context=job_context,
-            retry=(attempt == 1),
+    try:
+        answer = pipeline.llm.generate(
+            prompt=prompt,
+            system=(
+                "Tu es un système ATS RH chez Sonatrach. Réponds UNIQUEMENT en français. "
+                "RESPECTE STRICTEMENT le format demandé : **SCORE**, **DOMAINE**, **DÉCISION**, "
+                "**ATOUTS**, **LACUNES**, **POSTE RECOMMANDÉ**, **ANNÉES_EXPÉRIENCE**, **ANNÉE_DIPLOME**. "
+                "JAMAIS de tableaux markdown. JAMAIS de listes numérotées. "
+                "Sois strict et objectif : un soudeur postulant comptable = 0/10 incompatible. "
+                "Un comptable expérimenté pour un poste comptable = score élevé 7-9/10. "
+                "Le bonus Oil&Gas ne s'applique QUE si l'expérience pétrolière est dans le MÊME domaine que le poste."
+            ),
+            temperature=0.0,
+            max_tokens=pipeline.config.llm_max_tokens_long,
         )
-        try:
-            raw_answer = pipeline.llm.generate(
-                prompt=prompt,
-                system=SYSTEM_PROMPT,
-                temperature=0.0,
-                max_tokens=pipeline.config.llm_max_tokens_long,
-            )
-        except Exception as e:
-            raise RuntimeError(f"Erreur LLM : {e}")
+    except Exception as e:
+        raise RuntimeError(f"Erreur LLM : {e}")
 
-        json_data = _extract_json_object(raw_answer)
-        parsed = _normalize_json_result(json_data) if json_data else None
-        if parsed:
-            break
-        logger.warning(
-            "Tentative %d : JSON invalide pour '%s'. Réponse brute :\n%s",
-            attempt + 1, filename, (raw_answer or "")[:500],
-        )
+    score             = _extract_score(answer)
+    recommended_poste = _extract_recommended_poste(answer)
+    years_experience  = _extract_years_experience(answer)
+    diploma_year      = _extract_diploma_year(answer)
 
-    if parsed:
-        answer = _render_markdown_from_json(parsed)
-        score = parsed["score"]
-        recommended_poste = parsed["poste_recommande"]
-        years_experience = parsed["annees_experience"]
-        diploma_year = parsed["annee_diplome"]
-    else:
-        # ── Dernier recours : ancien parsing regex sur texte libre ────────
-        logger.warning(
-            "JSON non récupérable après 2 tentatives pour '%s' — fallback regex sur texte libre.",
-            filename,
-        )
-        answer = raw_answer or ""
-        score = _extract_score(answer)
-        recommended_poste = _extract_recommended_poste(answer)
-        years_experience = _extract_years_experience(answer)
-        diploma_year = _extract_diploma_year(answer)
+    if score is None:
+        logger.warning("Score non extrait pour '%s'. Réponse :\n%s", filename, answer[:500])
 
     elapsed = round(time.time() - t0, 2)
     displayed_poste = search_poste or recommended_poste or "Non précisé"
@@ -470,11 +308,11 @@ def sort_results_with_tiebreaker(results: list) -> list:
 
 
 # ─────────────────────────────────────────────────────────────
-# Parsers de secours (texte libre / ancien format) — utilisés uniquement
-# si le JSON n'a pas pu être récupéré après les 2 tentatives.
+# Parsers
 # ─────────────────────────────────────────────────────────────
 
 def _extract_score(text: str) -> Optional[int]:
+    import re
     patterns = [
         r"SCORE[^:\n]*:\s*\**\s*(\d{1,2})\s*\**\s*/\s*10",
         r"SCORE[^:\n]*:\s*\[?(\d{1,2})\]?\s*/\s*10",
@@ -497,6 +335,7 @@ def _extract_score(text: str) -> Optional[int]:
 
 
 def _extract_recommended_poste(text: str) -> Optional[str]:
+    import re
     patterns = [
         r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*[:\-]\s*([^\n\[\]]+)",
         r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*\n+\s*([^\n\[\]\*-][^\n\[\]\*]{3,})",
@@ -505,12 +344,13 @@ def _extract_recommended_poste(text: str) -> Optional[str]:
         m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
         if m:
             value = m.group(1).strip().strip("*•[] \t")
-            if value and "[" not in value and len(value) > 3 and not _is_sentence_not_title(value):
+            if value and "[" not in value and len(value) > 3:
                 return value
     return None
 
 
 def _extract_years_experience(text: str) -> Optional[int]:
+    import re
     patterns = [
         r"ANN[EÉ]ES?[_\s]EXP[EÉ]RIENCE[^:\n]*:\s*\**\s*(-?\d{1,2})\s*\**",
         r"ANN[EÉ]ES?[_\s]EXP[^:\n]*:\s*(-?\d{1,2})",
@@ -525,6 +365,7 @@ def _extract_years_experience(text: str) -> Optional[int]:
 
 
 def _extract_diploma_year(text: str) -> Optional[int]:
+    import re
     patterns = [
         r"ANN[EÉ]E[_\s]DIPLOM[EÉ][^:\n]*:\s*\**\s*((?:19|20)\d{2})\s*\**",
         r"ANN[EÉ]E[_\s]DIPLOM[^:\n]*:\s*((?:19|20)\d{2})",
