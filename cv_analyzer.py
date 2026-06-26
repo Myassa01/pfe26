@@ -170,6 +170,8 @@ EXEMPLES CONCRETS :
 - Nadia (comptable, 11 ans d'expérience, SAP, master finance) → poste "Comptable" → 8 ou 9/10
 - Hamdi (soudeur, 19 ans) → poste "Comptable" → 0/10, Incompatible
 - Hamdi (soudeur, 19 ans) → poste "Soudeur pipeline" → 9 ou 10/10
+- Hamdi (soudeur, 19 ans) → poste "Chef d'équipe soudeurs" → Compatible, score selon expérience encadrement
+- Rania (informaticienne) → poste "Chef d'équipe soudeurs" → 0 à 2/10, Incompatible
 
 ════════════════════════════════════════
 POSTE RECOMMANDÉ — RÈGLES STRICTES
@@ -265,19 +267,18 @@ def postprocess_score(
     Corrige le score si le LLM a été trop généreux malgré une incompatibilité.
 
     Règles :
-      1. Si la réponse contient explicitement INCOMPATIBLE → score ≤ 2
-      2. Si le domaine CV et le domaine du poste sont clairement différents → score ≤ 2
+      1. Si le domaine CV et le domaine du poste sont clairement différents → score ≤ 2
+         (détection objective par mots-clés, indépendante du texte LLM)
+      2. Si le LLM dit INCOMPATIBLE *et* les domaines sont différents → confirme le plafond
+         (on n'applique PAS le plafond sur "incompatible" seul : le LLM peut écrire
+          "Incompatible avec le poste de chef d'équipe" pour un soudeur postulant chef soudeurs,
+          ce qui est une confusion de niveau et non une incompatibilité de domaine)
     """
     if score is None:
         return score
 
-    answer_lower = answer.lower()
-
-    # Règle 1 : le LLM lui-même a dit INCOMPATIBLE
-    if "incompatible" in answer_lower:
-        return min(score, 2)
-
-    # Règle 2 : détecter l'incompatibilité par domaine
+    # Détection de domaine (source de vérité objective)
+    domains_differ = False
     if poste:
         cv_domain    = detect_domain(cv_text)
         poste_domain = detect_domain(poste)
@@ -286,7 +287,11 @@ def postprocess_score(
             and poste_domain != "inconnu"
             and cv_domain    != poste_domain
         ):
-            return min(score, 2)
+            domains_differ = True
+
+    # Règle unique : plafond à 2 uniquement si les domaines sont objectivement différents
+    if domains_differ:
+        return min(score, 2)
 
     return score
 
