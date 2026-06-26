@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class HFClient:
     def __init__(
         self,
-        model: str = "Qwen/Qwen2.5-1.5B-Instruct",   # ← modèle léger par défaut
+        model: str = "Qwen/Qwen2.5-3B-Instruct",   # ← modèle léger par défaut
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         temperature: float = 0.0,
         max_tokens: int = 512,
