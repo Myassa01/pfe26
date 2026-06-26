@@ -1,315 +1,286 @@
 """
-Module d'analyse de CV via pipeline RAG.
-Extraction CV + recherche exigences + analyse LLM.
+Module d'analyse de CV via pipeline RAG - Version corrigée et renforcée
 """
-
 import io
 import logging
 from typing import Optional
+import time
+import re
 
 logger = logging.getLogger(__name__)
-
 
 # ─────────────────────────────────────────────────────────────
 # Extraction texte
 # ─────────────────────────────────────────────────────────────
-
 def extract_text_from_pdf(content: bytes) -> str:
-    """Extraction texte PDF."""
     try:
         import fitz
         doc = fitz.open(stream=content, filetype="pdf")
         text = "\n".join(page.get_text() for page in doc)
         doc.close()
         return text.strip()
-
     except ImportError:
         logger.warning("PyMuPDF absent, fallback pdfplumber")
-
         try:
             import pdfplumber
             with pdfplumber.open(io.BytesIO(content)) as pdf:
-                return "\n".join(
-                    page.extract_text() or ""
-                    for page in pdf.pages
-                ).strip()
-
+                return "\n".join(page.extract_text() or "" for page in pdf.pages).strip()
         except ImportError:
-            raise RuntimeError(
-                "Aucune librairie PDF disponible. "
-                "Installez : pip install pymupdf"
-            )
+            raise RuntimeError("Aucune librairie PDF. Installez : pip install pymupdf")
 
 
 def extract_text_from_docx(content: bytes) -> str:
-    """Extraction DOCX."""
     try:
         from docx import Document
         doc = Document(io.BytesIO(content))
         return "\n".join(p.text for p in doc.paragraphs).strip()
-
     except ImportError:
-        raise RuntimeError(
-            "python-docx non installé. "
-            "Installez : pip install python-docx"
-        )
+        raise RuntimeError("python-docx non installé. Installez : pip install python-docx")
 
 
 def extract_cv_text(content: bytes, filename: str) -> str:
-    """Dispatcher extraction."""
     name = filename.lower()
-
     if name.endswith(".pdf"):
         return extract_text_from_pdf(content)
-
     elif name.endswith(".docx"):
         return extract_text_from_docx(content)
-
     elif name.endswith(".txt"):
         return content.decode("utf-8", errors="replace").strip()
-
-    raise ValueError(
-        f"Format non supporté : {filename}. "
-        "Formats acceptés : PDF, DOCX, TXT"
-    )
+    raise ValueError(f"Format non supporté : {filename}. Formats acceptés : PDF, DOCX, TXT")
 
 
 # ─────────────────────────────────────────────────────────────
-# Prompt analyse
+# Validation CV
 # ─────────────────────────────────────────────────────────────
+MIN_CV_LENGTH = 200
 
+def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
+    if not cv_text or len(cv_text.strip()) < MIN_CV_LENGTH:
+        return {
+            "answer": f"⚠️ CV insuffisant ({filename}) — contenu trop limité.",
+            "score": 0,
+            "poste": "Non analysé",
+            "recommended_poste": "Non déterminable — CV incomplet",
+            "sources": [],
+            "elapsed_seconds": 0.0,
+            "years_experience": None,
+            "diploma_year": None,
+            "filename": filename,
+        }
+    return None
+
+
+# ─────────────────────────────────────────────────────────────
+# Prompt simplifié et renforcé
+# ─────────────────────────────────────────────────────────────
 ANALYSIS_PROMPT = """
-Tu es un expert RH chez Sonatrach.
+Tu es un ATS strict de Sonatrach (recrutement pétrole & gaz).
 
-Analyse le CV ci-dessous par rapport au poste "{poste}"
-en utilisant les exigences récupérées depuis la base documentaire interne.
+POSTE CIBLE :
+{poste}
 
-=== EXIGENCES DU POSTE ===
+RÉFÉRENTIEL SONATRACH :
 {job_context}
 
-=== CV DU CANDIDAT ===
+CV DU CANDIDAT :
 {cv_text}
 
-=== BARÈME STRICT ===
-- 0-2 : Profil hors domaine
-- 3-4 : Faible adéquation
-- 5-6 : Adéquation moyenne
-- 7-8 : Bonne adéquation
-- 9-10 : Excellente adéquation
+=== RÈGLES OBLIGATOIRES (respecte-les à la lettre) ===
 
-RÈGLES :
-- Formation non technique pour poste technique => score max 3
-- Sans expérience industrielle/pétrole/gaz => pénalité
-- Qualités personnelles seules ≠ bon score
+1. IDENTIFICATION DU DOMAINE
+   Identifie clairement le domaine principal du CV :
+   - Soudage / Pipeline / Chaudronnerie → "Soudage"
+   - Informatique / Développement / Data → "Informatique"
+   - Comptabilité / Finance / Gestion → "Comptabilité"
+   - Autres domaines : électricité, mécanique, géologie, etc.
 
-Réponds STRICTEMENT en français, en respectant EXACTEMENT ce format (sans astérisques ni markdown) :
+2. RÈGLE D'INCOMPATIBILITÉ (LA PLUS IMPORTANTE)
+   Si le domaine du CV est différent du domaine du POSTE CIBLE → Score MAXIMUM 2/10 et DOMAINE = Incompatible.
+   Exemples :
+   - CV Soudeur + Poste Développeur Informatique → Incompatible (0-2/10)
+   - CV Comptable + Poste Soudeur → Incompatible (0-2/10)
+   - CV Informaticien + Poste Chef d'Équipe Soudeurs → Incompatible (0-2/10)
 
-SCORE : [chiffre entre 0 et 10]/10
+3. Si les domaines sont compatibles, note normalement (jusqu'à 10/10).
 
-DOMAINE CV : [Compatible / Partiellement compatible / Incompatible]
+FORMAT DE RÉPONSE OBLIGATOIRE (ne mets rien d'autre) :
 
-DÉCISION : [Recommandé / À étudier / Non recommandé]
-
-POINTS FORTS
-- [point fort 1]
-- [point fort 2]
-- [point fort 3]
-
-POINTS FAIBLES / MANQUANTS
-- [point faible 1]
-- [point faible 2]
-
-POSTE RECOMMANDÉ : [intitulé du poste Sonatrach le PLUS ADAPTÉ au profil réel du candidat, indépendamment du poste visé]
-
-ANNÉES_EXPÉRIENCE : [nombre entier d'années d'expérience professionnelle totale, -1 si non précisé]
-
-ANNÉE_DIPLÔMÉ : [année d'obtention du diplôme le plus élevé au format AAAA, ex: 2019. Laisser vide si non précisé]
+**SCORE** : X/10
+**DOMAINE** : Compatible / Incompatible
+**DÉCISION** : Recommandé / À étudier / Non recommandé
+**ATOUTS**
+- point court et clair
+- point court et clair
+**LACUNES**
+- point court et clair
+**POSTE RECOMMANDÉ** : Titre exact du poste
+**ANNÉES_EXPÉRIENCE** : nombre (ex: 12)
+**ANNÉE_DIPLOME** : année (ex: 2019) ou 0
 """
 
-
 def build_analysis_prompt(cv_text: str, poste: str, job_context: str) -> str:
+    poste_label = poste.strip() if poste else "Non précisé"
     return ANALYSIS_PROMPT.format(
-        poste=poste or "poste généraliste Sonatrach",
-        job_context=job_context or (
-            "Aucun document spécifique trouvé. "
-            "Utiliser bonnes pratiques RH générales."
-        ),
-        cv_text=cv_text[:4000],
+        poste=poste_label,
+        job_context=job_context or "Aucun référentiel disponible.",
+        cv_text=cv_text[:4500],
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# Détection de domaine (anti-hallucination)
+# ─────────────────────────────────────────────────────────────
+DOMAIN_KEYWORDS = {
+    "soudage": ["soud", "soudeur", "pipeline", "smaw", "tig", "mig", "chaudron", "wps", "asme", "soudage"],
+    "informatique": ["développeur", "ingénieur informatic", "python", "java", "sql", "data", "cloud", "devops", "logiciel", "ia", "spark"],
+    "comptabilite": ["comptable", "comptabilité", "sap", "sage", "finance", "bilan", "fiscal", "tva"],
+    # Ajoute d'autres domaines si nécessaire
+}
+
+def detect_domain(text: str) -> str:
+    text_lower = text.lower()
+    best_domain = "autre"
+    best_score = 0
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        score = sum(1 for kw in keywords if kw in text_lower)
+        if score > best_score:
+            best_score = score
+            best_domain = domain
+    return best_domain
+
+
+def postprocess_score(answer: str, score: Optional[int], cv_text: str, poste: str) -> Optional[int]:
+    """Force le score bas en cas d'incompatibilité de domaine."""
+    if score is None:
+        return score
+
+    cv_domain = detect_domain(cv_text)
+    poste_domain = detect_domain(poste) if poste else "autre"
+
+    if (cv_domain != "autre" and poste_domain != "autre" and cv_domain != poste_domain):
+        return min(score, 2)
+
+    return score
 
 
 # ─────────────────────────────────────────────────────────────
 # Analyse principale
 # ─────────────────────────────────────────────────────────────
-
-def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
-    import time
+def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str, filename: str = "CV") -> dict:
     t0 = time.time()
+
+    validation_error = validate_cv_text(cv_text, filename)
+    if validation_error:
+        return validation_error
 
     search_poste = poste.strip() if poste else ""
 
-    if search_poste:
-        search_query = f"exigences compétences diplômes requis poste {search_poste}"
-    else:
-        cv_hint = " ".join(cv_text[:600].split())[:300]
-        search_query = f"poste Sonatrach requis diplôme expérience {cv_hint}"
-
+    # RAG
     try:
+        search_query = f"exigences poste {search_poste} Sonatrach" if search_poste else f"postes Sonatrach {cv_text[:600]}"
         query_embedding = pipeline.embedder.embed_single(search_query)
-
-        dense_results = pipeline.vector_store.search(
-            query_embedding,
-            k=pipeline.config.top_k_dense,
-        )
-
-        sparse_results = []
-        if pipeline.bm25:
-            sparse_results = pipeline.bm25.search(
-                search_query,
-                k=pipeline.config.top_k_sparse,
-            )
-
+        dense_results = pipeline.vector_store.search(query_embedding, k=pipeline.config.top_k_dense)
+        sparse_results = pipeline.bm25.search(search_query, k=pipeline.config.top_k_sparse) if pipeline.bm25 else []
+        
         from src.retrieval.hybrid_search import reciprocal_rank_fusion
-        fused = reciprocal_rank_fusion(
-            dense_results,
-            sparse_results,
-            k=pipeline.config.rrf_k,
-        )
-
+        fused = reciprocal_rank_fusion(dense_results, sparse_results, k=pipeline.config.rrf_k)
         top_chunks = fused[:pipeline.config.top_k_after_rerank]
 
-        if pipeline.reranker and top_chunks:
-            pairs = [(search_query, c["content"]) for c in top_chunks]
-            scores = pipeline.reranker.model.predict(pairs)
-
-            for c, s in zip(top_chunks, scores):
-                c["rerank_score"] = float(s)
-
-            top_chunks = sorted(
-                top_chunks,
-                key=lambda x: x.get("rerank_score", 0),
-                reverse=True,
-            )
-
-        job_context = "\n\n---\n\n".join(
-            f"[{c['metadata'].get('source', '?')}]\n{c['content']}"
-            for c in top_chunks
-        )
-
-        sources = list({
-            c["metadata"].get("source", "?")
-            for c in top_chunks
-        })
-
+        job_context = "\n\n---\n\n".join(f"[{c['metadata'].get('source', '?')}]\n{c['content']}" for c in top_chunks)
+        sources = list({c["metadata"].get("source", "?") for c in top_chunks})
     except Exception as e:
-        logger.warning("Erreur recherche RAG : %s", e)
+        logger.warning("Erreur RAG : %s", e)
         job_context = ""
         sources = []
 
-    # Prompt final
-    prompt = build_analysis_prompt(
-        cv_text=cv_text,
-        poste=search_poste,
-        job_context=job_context,
-    )
-
+    # Prompt + LLM
+    prompt = build_analysis_prompt(cv_text, search_poste, job_context)
     try:
         answer = pipeline.llm.generate(
             prompt=prompt,
-            system="Tu es un expert RH chez Sonatrach. Réponds uniquement en français.",
+            system=(
+                "Tu es un ATS très strict chez Sonatrach. "
+                "Respecte TOUJOURS les règles d'incompatibilité de domaine. "
+                "Ne jamais donner plus de 2/10 quand les domaines sont différents."
+            ),
             temperature=0.0,
             max_tokens=pipeline.config.llm_max_tokens_long,
         )
-
     except Exception as e:
-        raise RuntimeError(f"Erreur analyse LLM : {e}")
+        raise RuntimeError(f"Erreur LLM : {e}")
 
+    # Post-traitement
     score = _extract_score(answer)
+    score = postprocess_score(answer, score, cv_text, search_poste)
     recommended_poste = _extract_recommended_poste(answer)
     years_experience = _extract_years_experience(answer)
     diploma_year = _extract_diploma_year(answer)
 
     elapsed = round(time.time() - t0, 2)
+    displayed_poste = search_poste or recommended_poste or "Non précisé"
 
     return {
         "answer": answer,
         "score": score,
-        "poste": search_poste or recommended_poste or "Non précisé",
+        "poste": displayed_poste,
         "recommended_poste": recommended_poste or "Non précisé",
-        "years_experience": years_experience,
-        "diploma_year": diploma_year,
         "sources": sources,
         "elapsed_seconds": elapsed,
+        "years_experience": years_experience,
+        "diploma_year": diploma_year,
+        "filename": filename,
     }
 
-# ─────────────────────────────────────────────────────────────
-# Parsers
-# ─────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────
+# Extractors
+# ─────────────────────────────────────────────────────────────
 def _extract_score(text: str) -> Optional[int]:
-    import re
-
     patterns = [
-        r"SCORE[^:\n]*:\s*\**\s*(\d{1,2})\s*\**\s*/\s*10",
-        r"SCORE[^:\n]*:\s*\[?(\d{1,2})\]?\s*/\s*10",
-        r"\*\*(\d{1,2})\*\*\s*/\s*10",
+        r"SCORE\s*:\s*(\d{1,2})\s*/\s*10",
+        r"\*\*SCORE\*\*\s*:\s*(\d{1,2})",
         r"(\d{1,2})\s*/\s*10",
     ]
-
     for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
+        m = re.search(pat, text, re.I)
         if m:
             val = int(m.group(1))
-            if 0 <= val <= 10:
-                return val
-
+            return val if 0 <= val <= 10 else None
     return None
 
 
 def _extract_recommended_poste(text: str) -> Optional[str]:
-    import re
     patterns = [
-        # Inline avec deux-points : **POSTE RECOMMANDÉ** : Ingénieur forage
-        r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*[:\-]\s*([^\n\[\]]+)",
-        # Ligne suivante : **POSTE RECOMMANDÉ**\nIngénieur forage
-        r"\*{0,2}POSTE\s+RECOMMAND[EÉ]\*{0,2}\s*\n+\s*([^\n\[\]\*]+)",
+        r"POSTE\s+RECOMMAND[EÉ]\s*[:\-]\s*([^\n]+)",
+        r"\*\*POSTE\s+RECOMMAND[EÉ]\*\*\s*[:\-]\s*([^\n]+)",
     ]
     for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
+        m = re.search(pat, text, re.I)
         if m:
-            value = m.group(1).strip().strip("*•[] \t")
-            # Rejeter si c'est le texte de template (crochets, trop court)
-            if value and "[" not in value and len(value) > 3:
-                return value
-   
+            return m.group(1).strip()
     return None
 
 
 def _extract_years_experience(text: str) -> Optional[int]:
-    """Extrait le nombre d'années d'expérience depuis le champ ANNÉES_EXPÉRIENCE."""
-    import re
-    patterns = [
-        r"ANN[EÉ]ES?[_\s]EXP[EÉ]RIENCE[^:\n]*:\s*\**\s*(-?\d{1,2})\s*\**",
-        r"ANN[EÉ]ES?[_\s]EXP[^:\n]*:\s*(-?\d{1,2})",
-    ]
-    for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            val = int(m.group(1))
-            if -1 <= val <= 50:
-                return val if val >= 0 else None
+    m = re.search(r"ANN[EÉ]ES?[_\s]EXP[EÉ]RIENCE[^:]*:\s*(-?\d{1,2})", text, re.I)
+    if m:
+        val = int(m.group(1))
+        return val if -1 <= val <= 50 else None
     return None
 
 
 def _extract_diploma_year(text: str) -> Optional[int]:
-    """Extrait l'année du diplôme depuis le champ ANNÉE_DIPLÔMÉ."""
-    import re
-    patterns = [
-        r"ANN[EÉ]E[_\s]DIPL[OÔ]M[EÉ][^:\n]*:\s*\**\s*((?:19|20)\d{2})\s*\**",
-        r"ANN[EÉ]E[_\s]DIPL[OÔ]M[^:\n]*:\s*((?:19|20)\d{2})",
-    ]
-    for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
-    return None
+    m = re.search(r"ANN[EÉ]E[_\s]DIPLOM[EÉ][^:]*:\s*((?:19|20)\d{2})", text, re.I)
+    return int(m.group(1)) if m else None
+
+
+# ─────────────────────────────────────────────────────────────
+# Tri batch
+# ─────────────────────────────────────────────────────────────
+def sort_results_with_tiebreaker(results: list) -> list:
+    def sort_key(r: dict):
+        score = r.get("score") or _extract_score(r.get("answer", "")) or -1
+        years = r.get("years_experience") or -1
+        diploma = r.get("diploma_year") or 9999
+        return (-score, -years, diploma)
+    return sorted(results, key=sort_key)
