@@ -102,24 +102,28 @@ RÈGLES :
 - Sans expérience industrielle/pétrole/gaz => pénalité
 - Qualités personnelles seules ≠ bon score
 
-Réponds STRICTEMENT en français :
+Réponds STRICTEMENT en français, en respectant EXACTEMENT ce format (sans astérisques ni markdown) :
 
-**SCORE DE CORRESPONDANCE** : [0-10]/10
+SCORE : [chiffre entre 0 et 10]/10
 
-**POINTS FORTS**
-- ...
+DOMAINE CV : [Compatible / Partiellement compatible / Incompatible]
 
-**POINTS FAIBLES / MANQUANTS**
-- ...
+DÉCISION : [Recommandé / À étudier / Non recommandé]
 
-**RECOMMANDATION FINALE**
-Recommandé / À étudier / Non recommandé avec justification.
+POINTS FORTS
+- [point fort 1]
+- [point fort 2]
+- [point fort 3]
 
-**REMARQUES**
-Observations supplémentaires.
+POINTS FAIBLES / MANQUANTS
+- [point faible 1]
+- [point faible 2]
 
-**POSTE RECOMMANDÉ** : [intitulé du poste Sonatrach le PLUS ADAPTÉ au profil réel du candidat, 
-indépendamment du poste visé — basé uniquement sur sa formation et son expérience]
+POSTE RECOMMANDÉ : [intitulé du poste Sonatrach le PLUS ADAPTÉ au profil réel du candidat, indépendamment du poste visé]
+
+ANNÉES_EXPÉRIENCE : [nombre entier d'années d'expérience professionnelle totale, -1 si non précisé]
+
+ANNÉE_DIPLÔMÉ : [année d'obtention du diplôme le plus élevé au format AAAA, ex: 2019. Laisser vide si non précisé]
 """
 
 
@@ -222,18 +226,21 @@ def analyze_cv_with_pipeline(pipeline, cv_text: str, poste: str) -> dict:
 
     score = _extract_score(answer)
     recommended_poste = _extract_recommended_poste(answer)
+    years_experience = _extract_years_experience(answer)
+    diploma_year = _extract_diploma_year(answer)
 
-    
     elapsed = round(time.time() - t0, 2)
 
     return {
-    "answer": answer,
-    "score": score,
-    "poste": search_poste or recommended_poste or "Non précisé",
-    "recommended_poste": recommended_poste or "Non précisé",  # ← ajouter
-    "sources": sources,
-    "elapsed_seconds": elapsed,
-}
+        "answer": answer,
+        "score": score,
+        "poste": search_poste or recommended_poste or "Non précisé",
+        "recommended_poste": recommended_poste or "Non précisé",
+        "years_experience": years_experience,
+        "diploma_year": diploma_year,
+        "sources": sources,
+        "elapsed_seconds": elapsed,
+    }
 
 # ─────────────────────────────────────────────────────────────
 # Parsers
@@ -275,4 +282,34 @@ def _extract_recommended_poste(text: str) -> Optional[str]:
             if value and "[" not in value and len(value) > 3:
                 return value
    
+    return None
+
+
+def _extract_years_experience(text: str) -> Optional[int]:
+    """Extrait le nombre d'années d'expérience depuis le champ ANNÉES_EXPÉRIENCE."""
+    import re
+    patterns = [
+        r"ANN[EÉ]ES?[_\s]EXP[EÉ]RIENCE[^:\n]*:\s*\**\s*(-?\d{1,2})\s*\**",
+        r"ANN[EÉ]ES?[_\s]EXP[^:\n]*:\s*(-?\d{1,2})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            val = int(m.group(1))
+            if -1 <= val <= 50:
+                return val if val >= 0 else None
+    return None
+
+
+def _extract_diploma_year(text: str) -> Optional[int]:
+    """Extrait l'année du diplôme depuis le champ ANNÉE_DIPLÔMÉ."""
+    import re
+    patterns = [
+        r"ANN[EÉ]E[_\s]DIPL[OÔ]M[EÉ][^:\n]*:\s*\**\s*((?:19|20)\d{2})\s*\**",
+        r"ANN[EÉ]E[_\s]DIPL[OÔ]M[^:\n]*:\s*((?:19|20)\d{2})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
     return None
