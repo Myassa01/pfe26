@@ -82,7 +82,7 @@ def validate_cv_text(cv_text: str, filename: str) -> Optional[dict]:
 
 
 # ─────────────────────────────────────────────────────────────
-# Prompt — version corrigée
+# Prompt
 # ─────────────────────────────────────────────────────────────
 
 ANALYSIS_PROMPT = """
@@ -232,6 +232,66 @@ def build_analysis_prompt(cv_text: str, poste: str, job_context: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# Post-processing : correction de score (anti-hallucination)
+# ─────────────────────────────────────────────────────────────
+
+DOMAIN_KEYWORDS = {
+    "soudage":       ["soud", "pipeline", "smaw", "tig", "mig", "chaudronnerie", "wps", "asme"],
+    "comptabilite":  ["compt", "fiscal", "bilan", "sage", "sap fi", "tva", "ibs", "irg", "audit"],
+    "informatique":  ["data", "python", "sql", "développ", "logiciel", "cloud", "ml", "ia", "spark"],
+    "rh":            ["ressources humaines", "recrutement", "paie", "rh", "gpec"],
+    "juridique":     ["juriste", "droit", "contrat", "avocat", "juridique"],
+    "géologie":      ["géolog", "forage", "réservoir", "sismique", "pétrophys"],
+    "électricité":   ["électr", "haute tension", "basse tension", "automatisme", "instrumentation"],
+    "mécanique":     ["mécanicien", "maintenance", "hydraulique", "pneumatique", "turbine"],
+}
+
+
+def detect_domain(text: str) -> str:
+    """Retourne le domaine dominant du texte (CV ou poste)."""
+    text_lower = text.lower()
+    scores = {}
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        scores[domain] = sum(1 for kw in keywords if kw in text_lower)
+    if not any(scores.values()):
+        return "inconnu"
+    return max(scores, key=scores.get)
+
+
+def postprocess_score(
+    answer: str, score: Optional[int], cv_text: str, poste: str
+) -> Optional[int]:
+    """
+    Corrige le score si le LLM a été trop généreux malgré une incompatibilité.
+
+    Règles :
+      1. Si la réponse contient explicitement INCOMPATIBLE → score ≤ 2
+      2. Si le domaine CV et le domaine du poste sont clairement différents → score ≤ 2
+    """
+    if score is None:
+        return score
+
+    answer_lower = answer.lower()
+
+    # Règle 1 : le LLM lui-même a dit INCOMPATIBLE
+    if "incompatible" in answer_lower:
+        return min(score, 2)
+
+    # Règle 2 : détecter l'incompatibilité par domaine
+    if poste:
+        cv_domain    = detect_domain(cv_text)
+        poste_domain = detect_domain(poste)
+        if (
+            cv_domain    != "inconnu"
+            and poste_domain != "inconnu"
+            and cv_domain    != poste_domain
+        ):
+            return min(score, 2)
+
+    return score
+
+
+# ─────────────────────────────────────────────────────────────
 # Analyse principale
 # ─────────────────────────────────────────────────────────────
 
@@ -243,35 +303,34 @@ def analyze_cv_with_pipeline(
 
     validation_error = validate_cv_text(cv_text, filename)
     if validation_error:
-        logger.warning("CV '%s' rejeté : contenu insuffisant (%d car.)", filename, len(cv_text.strip()))
+        logger.warning(
+            "CV '%s' rejeté : contenu insuffisant (%d car.)", filename, len(cv_text.strip())
+        )
         return validation_error
 
     search_poste = poste.strip() if poste else ""
 
     # ── Requête RAG ────────────────────────────────────────────
-    # Si pas de poste : chercher dans le référentiel les postes pertinents
-    # en se basant sur les mots-clés du CV
     if search_poste:
         search_query = f"exigences diplômes compétences requis poste {search_poste} Sonatrach"
     else:
-        # Extraire les 5 premiers mots-clés métier du CV
-        cv_keywords = " ".join(cv_text[:800].split())[:400]
+        cv_keywords  = " ".join(cv_text[:800].split())[:400]
         search_query = f"postes Sonatrach référentiel {cv_keywords}"
 
     try:
         query_embedding = pipeline.embedder.embed_single(search_query)
-        dense_results = pipeline.vector_store.search(query_embedding, k=pipeline.config.top_k_dense)
+        dense_results   = pipeline.vector_store.search(query_embedding, k=pipeline.config.top_k_dense)
 
         sparse_results = []
         if pipeline.bm25:
             sparse_results = pipeline.bm25.search(search_query, k=pipeline.config.top_k_sparse)
 
         from src.retrieval.hybrid_search import reciprocal_rank_fusion
-        fused = reciprocal_rank_fusion(dense_results, sparse_results, k=pipeline.config.rrf_k)
+        fused      = reciprocal_rank_fusion(dense_results, sparse_results, k=pipeline.config.rrf_k)
         top_chunks = fused[:pipeline.config.top_k_after_rerank]
 
         if pipeline.reranker and top_chunks:
-            pairs = [(search_query, c["content"]) for c in top_chunks]
+            pairs  = [(search_query, c["content"]) for c in top_chunks]
             scores = pipeline.reranker.model.predict(pairs)
             for c, s in zip(top_chunks, scores):
                 c["rerank_score"] = float(s)
@@ -285,7 +344,7 @@ def analyze_cv_with_pipeline(
     except Exception as e:
         logger.warning("Erreur RAG : %s", e)
         job_context = ""
-        sources = []
+        sources     = []
 
     # ── Appel LLM ─────────────────────────────────────────────
     prompt = build_analysis_prompt(cv_text=cv_text, poste=search_poste, job_context=job_context)
@@ -308,7 +367,9 @@ def analyze_cv_with_pipeline(
     except Exception as e:
         raise RuntimeError(f"Erreur LLM : {e}")
 
+    # ── Extraction + post-processing ──────────────────────────
     score             = _extract_score(answer)
+    score             = postprocess_score(answer, score, cv_text, search_poste)  # ← correction anti-hallucination
     recommended_poste = _extract_recommended_poste(answer)
     years_experience  = _extract_years_experience(answer)
     diploma_year      = _extract_diploma_year(answer)
@@ -316,7 +377,7 @@ def analyze_cv_with_pipeline(
     if score is None:
         logger.warning("Score non extrait pour '%s'. Réponse :\n%s", filename, answer[:500])
 
-    elapsed = round(time.time() - t0, 2)
+    elapsed         = round(time.time() - t0, 2)
     displayed_poste = search_poste or recommended_poste or "Non précisé"
 
     return {
@@ -343,8 +404,8 @@ def sort_results_with_tiebreaker(results: list) -> list:
             score = _extract_score(r.get("answer", ""))
         score = score if score is not None else -1
 
-        years_exp = r.get("years_experience")
-        years_exp = years_exp if (years_exp is not None and years_exp >= 0) else -1
+        years_exp    = r.get("years_experience")
+        years_exp    = years_exp if (years_exp is not None and years_exp >= 0) else -1
 
         diploma_year = r.get("diploma_year")
         diploma_year = diploma_year if (diploma_year and diploma_year > 0) else 9999
